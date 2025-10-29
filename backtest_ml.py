@@ -108,7 +108,7 @@ class MLBacktester:
         last = df.iloc[-1]
         entry_price = last['close']
         atr = last['atr']
-        sl = entry_price - atr * 1.5 if pos_type == 'long' else entry_price + atr * 1.5
+        sl = entry_price - atr * 0.8 if pos_type == 'long' else entry_price + atr * 0.8
         size = calculate_position_size(self.capital, entry_price, sl, 0.01)
         if size <= 0:
             return
@@ -117,16 +117,18 @@ class MLBacktester:
             'type': pos_type,
             'size': size,
             'entry': entry_price,
-            'sl': sl
+            'sl': sl,
+            'entry_time': df.index[-1]  # ← Fecha/hora de entrada
         }
         self.trades.append({
             'type': pos_type,
             'price': entry_price,
             'size': size,
-            'timestamp': df.index[-1],
+            'timestamp': df.index[-1],  # ← Fecha/hora de entrada
             'strategy': 'ml_model'
         })
-        print(f"🤖 {'LONG' if pos_type == 'long' else 'SHORT'} en {df.index[-1].strftime('%Y-%m-%d %H:%M')} a ${entry_price:.2f}")
+        print(f"🤖 {'LONG' if pos_type == 'long' else 'SHORT'} | "
+            f"Entrada: {df.index[-1].strftime('%Y-%m-%d %H:%M')} a ${entry_price:.2f}")
 
     def _close_position(self, price, reason, timestamp):
         pnl = (price - self.position['entry']) * self.position['size']
@@ -135,11 +137,14 @@ class MLBacktester:
         self.capital += pnl
         self.trades[-1].update({
             'exit_price': price,
+            'exit_time': timestamp,  # ← Fecha/hora de salida
             'pnl': pnl,
             'reason': reason
         })
         save_trade(self.trades[-1])
-        print(f"  🔴 Cierre ({reason}) → PnL: ${pnl:+.2f} | Capital: ${self.capital:.2f}")
+        print(f"  🔴 Cierre ({reason}) | "
+            f"Salida: {timestamp.strftime('%Y-%m-%d %H:%M')} a ${price:.2f} | "
+            f"PnL: ${pnl:+.2f} | Capital: ${self.capital:.2f}")
         self.position = None
 
     def _print_summary(self):
@@ -181,7 +186,7 @@ if __name__ == "__main__":
     symbol_to_use = "BTC/USDT:USDT" if TRADING_MODE == "futures" else SYMBOL
     
     print("⏳ Descargando datos para backtest ML...")
-    df = fetch_ohlcv(symbol_to_use, "1h", limit=500)  # 1000 horas = ~41 días
+    df = fetch_ohlcv(symbol_to_use, "1h", limit=10000)  # 1000 horas = ~41 días
 
     if df.empty:
         print("❌ Error al cargar datos.")

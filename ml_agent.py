@@ -35,7 +35,7 @@ class MLAgent:
         proba = self.model.predict_proba(last_row)[0]
         confidence = max(proba)
         
-        if confidence < 0.6:  # umbral de confianza
+        if confidence < 0.5:  # umbral de confianza
             return "wait"
         
         return "long" if pred == 1 else "short" if pred == -1 else "wait"

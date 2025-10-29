@@ -6,7 +6,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report
 import joblib
 from data import fetch_ohlcv
-from indicators import add_indicators
+from indicators import add_indicators, add_fibonacci_levels
 
 def create_features_and_labels(df, lookahead=10, threshold=0.02):
     """
@@ -16,24 +16,29 @@ def create_features_and_labels(df, lookahead=10, threshold=0.02):
     """
     df = df.copy()
     
-    # Calcular retorno futuro
+    # 👇 1. Añadir TODOS los indicadores PRIMERO (incluyendo Fibonacci)
+    df = add_indicators(df)  # Asegúrate de que esto esté aquí si no lo llamaste antes
+    df = add_fibonacci_levels(df, window=100)
+    
+    # 👇 2. Calcular retorno futuro
     df['future_close'] = df['close'].shift(-lookahead)
     df['future_return'] = (df['future_close'] - df['close']) / df['close']
     
-    # Etiquetas: 1 = compra, 0 = no operar, -1 = short (opcional)
+    # 👇 3. Crear etiquetas
     df['label'] = 0
     df.loc[df['future_return'] > threshold, 'label'] = 1    # Long
     df.loc[df['future_return'] < -threshold, 'label'] = -1  # Short
     
-    # Eliminar filas con NaN
+    # 👇 4. Eliminar filas con NaN (ahora incluye Fibonacci)
     df = df.dropna()
     
-    # Features: todos los indicadores + liquidez
+    # 👇 5. Definir features
     feature_cols = [
         'open', 'high', 'low', 'close', 'volume',
         'ema50', 'ema200', 'rsi', 'atr',
         'upper_wick', 'lower_wick', 'body',
-        'liquidez'  # ← ¡tu nuevo indicador!
+        'liquidez',
+        #'fib_786', 'fib_range'
     ]
     
     X = df[feature_cols]
@@ -43,7 +48,7 @@ def create_features_and_labels(df, lookahead=10, threshold=0.02):
 
 # ... (todo igual hasta create_features_and_labels) ...
 
-def train_ml_model(symbol="BTC/USDT:USDT", days=30):
+def train_ml_model(symbol="BTC/USDT:USDT", days=120):
     print("📥 Descargando datos históricos...")
     df_hist = fetch_ohlcv(symbol, "1h", limit=24*days)
     df_hist = add_indicators(df_hist)

@@ -15,3 +15,26 @@ def add_indicators(df):
     df['spread'] = (df['high'] - df['low']) / df['close']  # proxy de spread
     df['liquidez'] = df['volume'] / (df['spread'] + 1e-8)  # más alto = más líquido
     return df
+
+def add_fibonacci_levels(df, window=50):
+    """
+    Añade niveles de Fibonacci (0.0, 0.236, 0.382, 0.618, 0.786, 1.0)
+    basado en el rango más reciente (máximo y mínimo en 'window' velas).
+    """
+    df = df.copy()
+    # Encontrar swing alto y bajo en la ventana
+    recent_high = df['high'].rolling(window=window).max()
+    recent_low = df['low'].rolling(window=window).min()
+    
+    # Rango Fibonacci
+    df['fib_range'] = recent_high - recent_low
+    
+    # Niveles
+    df['fib_0'] = recent_high  # 0.0
+    df['fib_236'] = recent_high - 0.236 * df['fib_range']
+    df['fib_382'] = recent_high - 0.382 * df['fib_range']
+    df['fib_618'] = recent_high - 0.618 * df['fib_range']
+    df['fib_786'] = recent_high - 0.786 * df['fib_range']
+    df['fib_100'] = recent_low  # 1.0
+    
+    return df

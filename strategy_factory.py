@@ -54,9 +54,38 @@ def strategy_bollinger_breakout(df, params):
         return 'long'   # sobreventa → long
     return None
 
+# strategy_factory.py
+def strategy_fibonacci_786(df, params):
+    """
+    Estrategia: Compra en retroceso al 78.6% de Fibonacci con confirmación de vela.
+    Inspirada en @Eliz883.
+    """
+    last = df.iloc[-1]
+    prev = df.iloc[-2]
+    
+    # Verificar que haya niveles Fibonacci
+    if pd.isna(last['fib_786']):
+        return None
+    
+    # Zona de entrada: precio cerca de fib_786
+    margin = 0.002  # 0.2% de margen
+    near_786 = abs(last['close'] - last['fib_786']) / last['fib_786'] < margin
+    
+    # Confirmación de vela alcista
+    bullish_candle = last['close'] > last['open']
+    
+    # Tendencia previa alcista (precio cerca del swing alto)
+    in_uptrend = (last['high'] - last['fib_0']) / last['fib_0'] < 0.01
+    
+    if near_786 and bullish_candle and in_uptrend:
+        return 'long'
+    
+    return None
+
 # Registro de estrategias
 STRATEGIES = {
     'ema_rsi_wick': strategy_ema_rsi_wick,
     'macd_histogram': strategy_macd_histogram,
     'bollinger_breakout': strategy_bollinger_breakout,
+    'fibonacci_786': strategy_fibonacci_786,
 }
