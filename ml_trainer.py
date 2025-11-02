@@ -125,4 +125,4 @@ def train_ml_model(symbol="BTC/USDT:USDT", days=120):
 if __name__ == "__main__":
     from config import SYMBOL, TRADING_MODE
     symbol_to_use = "BTC/USDT:USDT" if TRADING_MODE == "futures" else SYMBOL
-    train_ml_model(symbol=symbol_to_use, days=60)
+    train_ml_model(symbol=symbol_to_use, days=120)

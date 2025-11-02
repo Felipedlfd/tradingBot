@@ -186,7 +186,7 @@ if __name__ == "__main__":
     symbol_to_use = "BTC/USDT:USDT" if TRADING_MODE == "futures" else SYMBOL
     
     print("⏳ Descargando datos para backtest ML...")
-    df = fetch_ohlcv(symbol_to_use, "1h", limit=10000)  # 1000 horas = ~41 días
+    df = fetch_ohlcv(symbol_to_use, "1h", limit=1000)  # 1000 horas = ~41 días
 
     if df.empty:
         print("❌ Error al cargar datos.")
