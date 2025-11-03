@@ -1,7 +1,7 @@
 # agent.py
 import pandas as pd
 import logging
-from config import SYMBOL, TIMEFRAME, INITIAL_CAPITAL, MODE, TRADING_MODE, OPTIMIZE_EVERY
+from config import SYMBOL, TRADING_MODE, INITIAL_CAPITAL, MODE, SIGNAL_TIMEFRAME, EXECUTION_TIMEFRAME
 from data import fetch_ohlcv
 from indicators import add_indicators
 from risk_manager import calculate_position_size
@@ -9,10 +9,7 @@ from learner import load_best_params
 from executor import TradeExecutor
 from notifier import send_telegram_message
 from utils import save_trade
-from strategy_factory import STRATEGIES
-from strategy_selector import load_best_strategy
 from ml_agent import MLAgent
-from strategy import should_exit_position
 
 class CryptoAgent:
     def __init__(self):
@@ -20,60 +17,104 @@ class CryptoAgent:
         self.trading_mode = TRADING_MODE
         self.capital = INITIAL_CAPITAL
         self.position = None
-        self.trades = []  # ← Añade esta línea
-        self.trade_count = 0  # ← Añade esta línea
-        self.params = load_best_params()  # ← Añade esta línea
+        self.trades = []
+        self.trade_count = 0
+        self.params = load_best_params()
         self.ml_agent = MLAgent()
-        self.executor = TradeExecutor(SYMBOL)  # ← ¡Esta línea es clave!
-        logging.info("🧠 Usando modelo ML para señales")
+        self.executor = TradeExecutor(SYMBOL)
+        self.last_signal = None
+        self.signal_timeframe = SIGNAL_TIMEFRAME
+        self.execution_timeframe = EXECUTION_TIMEFRAME
+        logging.info(f"🧠 Agente iniciado | Señales: {SIGNAL_TIMEFRAME} | Ejecución: {EXECUTION_TIMEFRAME}")
+
+    def _is_signal_time(self, current_time):
+        """Verifica si es momento de generar señal (al inicio de cada período de señal)"""
+        if self.signal_timeframe == "1h":
+            return current_time.minute == 0
+        elif self.signal_timeframe == "4h":
+            return current_time.hour % 4 == 0 and current_time.minute == 0
+        elif self.signal_timeframe == "1d":
+            return current_time.hour == 0 and current_time.minute == 0
+        return True  # Para otros timeframes
+
+    def _is_signal_still_valid(self, signal, current_price, current_atr):
+        """Verifica que la señal no esté vencida"""
+        # 1. Tiempo máximo: 30 minutos para señales de 1h
+        signal_age = (pd.Timestamp.now(tz='UTC') - signal['time']).total_seconds() / 60
+        max_age = 30 if self.signal_timeframe == "1h" else 120
+        if signal_age > max_age:
+            return False
+        
+        # 2. Movimiento de precio: no más de 0.5 ATR desde la señal
+        price_move = abs(current_price - signal['price'])
+        if price_move > 0.5 * signal['atr']:
+            return False
+        
+        # 3. Dirección: el precio debe seguir en la dirección de la señal
+        if signal['direction'] == 'long' and current_price < signal['price']:
+            return False
+        if signal['direction'] == 'short' and current_price > signal['price']:
+            return False
+            
+        return True
 
     def _check_position_status(self):
-        """Verifica si la posición sigue abierta en Binance (solo live)"""
+        """Verifica posición en Binance (solo live)"""
         try:
-            if TRADING_MODE == "futures":
+            if MODE == "live" and TRADING_MODE == "futures":
                 positions = self.executor.exchange.fetch_positions([self.symbol])
                 open_positions = [p for p in positions if float(p['contracts']) > 0]
-                if not open_positions:
-                    # La posición se cerró (por OCO o manualmente)
+                if not open_positions and self.position:
                     current_price = self.executor.exchange.fetch_ticker(self.symbol)['last']
                     self._close_position(current_price, 'closed_by_exchange')
-            else:
-                # Para spot, verificar balance (más complejo)
-                pass
         except Exception as e:
-            logging.warning(f"No se pudo verificar posición en Binance: {e}")
+            logging.warning(f"No se pudo verificar posición: {e}")
 
     def run_once(self):
         try:
             logging.info("💓 Evaluando mercado...")
-            df = fetch_ohlcv(self.symbol, TIMEFRAME)
-            df = add_indicators(df)
             
-            # En modo LIVE: verificar si la posición sigue abierta en Binance
+            # Descargar datos de ejecución (5m)
+            df_exec = fetch_ohlcv(self.symbol, self.execution_timeframe)
+            if df_exec.empty:
+                return
+            df_exec = add_indicators(df_exec)
+            current_time = df_exec.index[-1]
+            current_price = df_exec['close'].iloc[-1]
+            
+            # En live: verificar si la posición sigue abierta
             if MODE == "live" and self.position is not None:
                 self._check_position_status()
-                if self.position is None:  # Ya se cerró (por OCO)
+                if self.position is None:
                     return
             
-            # Generar señal con ML
-            signal = self.ml_agent.get_signal(self.symbol, TIMEFRAME)
+            # Generar nueva señal si es momento
+            if self._is_signal_time(current_time) and self.position is None:
+                df_signal = fetch_ohlcv(self.symbol, self.signal_timeframe)
+                if not df_signal.empty:
+                    df_signal = add_indicators(df_signal)
+                    signal_dir = self.ml_agent.get_signal_from_dataframe(df_signal)
+                    if signal_dir in ['long', 'short']:
+                        self.last_signal = {
+                            'direction': signal_dir,
+                            'price': df_signal['close'].iloc[-1],
+                            'time': df_signal.index[-1],
+                            'atr': df_signal['atr'].iloc[-1]
+                        }
+                        logging.info(f"✅ Nueva señal {signal_dir.upper()} detectada")
             
-            if self.position is None:
-                if signal == 'long':
-                    self._open_position(df, 'long')
-                elif signal == 'short' and TRADING_MODE == "futures":
-                    self._open_position(df, 'short')
-            else:
-                # Solo en modo PAPER: verificar SL/TP manualmente
-                if MODE == "paper":
-                    current_price = df['close'].iloc[-1]
-                    sl_hit, tp_hit, sl, tp = should_exit_position(
-                        df, self.position['entry'], self.position['type'], self.params['atr_multiple']
-                    )
-                    if sl_hit or tp_hit:
-                        self._close_position(current_price, 'SL' if sl_hit else 'TP')
-                # En modo LIVE: asumimos que OCO ya cerró la posición (verificado arriba)
-                        
+            # Ejecutar señal si está disponible y es válida
+            if self.last_signal and self.position is None:
+                if self._is_signal_still_valid(self.last_signal, current_price, df_exec['atr'].iloc[-1]):
+                    if self.last_signal['direction'] == 'long':
+                        self._open_position(df_exec, 'long')
+                    elif self.last_signal['direction'] == 'short' and TRADING_MODE == "futures":
+                        self._open_position(df_exec, 'short')
+                    self.last_signal = None  # Consumir la señal
+                else:
+                    logging.info("⚠️ Señal obsoleta, ignorando...")
+                    self.last_signal = None
+                    
         except Exception as e:
             logging.error(f"Error en run_once: {e}", exc_info=True)
 
@@ -87,7 +128,7 @@ class CryptoAgent:
         if size <= 0:
             return
 
-        # 👇 Ajuste clave: usar OCO en modo live
+        # Enviar orden (OCO en live, simple en paper)
         if MODE == "live":
             self.executor.place_order(
                 side='buy' if pos_type == 'long' else 'sell',
@@ -96,10 +137,9 @@ class CryptoAgent:
                 tp_price=tp
             )
         else:
-            # Modo paper: solo registrar
             side = 'buy' if pos_type == 'long' else 'sell'
             self.executor.place_order(side, size, entry_price)
-        
+
         self.position = {
             'type': pos_type,
             'size': size,
@@ -112,14 +152,14 @@ class CryptoAgent:
             'price': entry_price,
             'size': size,
             'timestamp': df.index[-1],
-            'strategy': 'ml_model'
+            'strategy': 'ml_hybrid'
         }
         self.trades.append(trade_record)
         
-        # 👇 Mensaje mejorado con SL, TP y riesgo
+        # Mensaje con detalles
         risk_amount = self.capital * self.params['risk_per_trade']
         msg = (
-            f"🤖 NUEVO {pos_type.upper()}\n"
+            f"🤖 NUEVO {pos_type.upper()} (Híbrido)\n"
             f"Símbolo: {self.symbol}\n"
             f"Precio: ${entry_price:.2f}\n"
             f"Tamaño: {size:.6f} ({size * entry_price:.2f} USDT)\n"
@@ -144,7 +184,7 @@ class CryptoAgent:
         close_side = 'sell' if self.position['type'] == 'long' else 'buy'
         self.executor.close_position(self.position['size'], close_side)
         
-        # 👇 Mensaje mejorado con fecha y hora
+        # Mensaje de cierre
         from datetime import datetime
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         msg = (
