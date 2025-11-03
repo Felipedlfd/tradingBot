@@ -7,7 +7,6 @@ import pickle
 from pathlib import Path
 from data import fetch_ohlcv
 from indicators import add_indicators
-from strategy import should_enter_long, should_enter_short, should_exit_position
 from risk_manager import calculate_position_size
 
 # Parámetros por defecto

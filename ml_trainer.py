@@ -8,7 +8,7 @@ import joblib
 from data import fetch_ohlcv
 from indicators import add_indicators, add_fibonacci_levels
 
-def create_features_and_labels(df, lookahead=10, threshold=0.02):
+def create_features_and_labels(df, lookahead=15, threshold=0.02):
     """
     Crea features (X) y etiquetas (y) para entrenamiento.
     - lookahead: cuántas velas mirar al futuro.
@@ -60,7 +60,7 @@ def train_ml_model(symbol="BTC/USDT:USDT", days=120):
     
     print("⚙️  Creando features históricos...")
     X_hist, y_hist, feature_cols = create_features_and_labels(
-        df_hist, lookahead=10, threshold=0.015
+        df_hist, lookahead=15, threshold=0.015
     )
     
     # ✅ PASO CLAVE: Cargar trades reales como datos adicionales
@@ -125,4 +125,4 @@ def train_ml_model(symbol="BTC/USDT:USDT", days=120):
 if __name__ == "__main__":
     from config import SYMBOL, TRADING_MODE
     symbol_to_use = "BTC/USDT:USDT" if TRADING_MODE == "futures" else SYMBOL
-    train_ml_model(symbol=symbol_to_use, days=120)
+    train_ml_model(symbol=symbol_to_use, days=360)

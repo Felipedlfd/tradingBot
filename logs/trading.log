@@ -1035,3 +1035,10 @@ Traceback (most recent call last):
   File "C:\dev\tradingBot\data.py", line 99, in fetch_ohlcv
     raise Exception(f"No se pudieron obtener datos de {symbol} después de {max_retries} intentos")
 Exception: No se pudieron obtener datos de BTC/USDT:USDT después de 5 intentos
+2025-11-03 14:00:00,825 - INFO - 💓 Evaluando mercado...
+2025-11-03 14:48:45,339 - INFO - 🟢 Iniciando Crypto Trading Agent (Windows Service Mode)
+2025-11-03 14:48:45,350 - INFO - 🤖 Modelo ML cargado exitosamente.
+2025-11-03 14:48:45,351 - INFO - 🧠 Agente iniciado | Señales: 1h | Ejecución: 5m
+2025-11-03 14:48:45,351 - INFO - 🚀 Agente iniciado | Señales: 1h | Ejecución: 5m
+2025-11-03 14:48:45,351 - INFO - 💓 Evaluando mercado...
+2025-11-03 14:48:56,412 - INFO - 🛑 Agente detenido por el usuario.

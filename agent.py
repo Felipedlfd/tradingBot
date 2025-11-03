@@ -27,6 +27,22 @@ class CryptoAgent:
         self.execution_timeframe = EXECUTION_TIMEFRAME
         logging.info(f"🧠 Agente iniciado | Señales: {SIGNAL_TIMEFRAME} | Ejecución: {EXECUTION_TIMEFRAME}")
 
+    def _should_exit_position(self, df, entry_price, position_type, atr_multiple=1.5):
+        """Simula cierre por SL/TP (solo para modo paper)"""
+        last = df.iloc[-1]
+        atr = last['atr']
+        if position_type == 'long':
+            sl = entry_price - atr * atr_multiple
+            tp = entry_price + atr * atr_multiple * 2
+            sl_hit = last['close'] <= sl
+            tp_hit = last['close'] >= tp
+        else:  # short
+            sl = entry_price + atr * atr_multiple
+            tp = entry_price - atr * atr_multiple * 2
+            sl_hit = last['close'] >= sl
+            tp_hit = last['close'] <= tp
+        return sl_hit, tp_hit, sl, tp
+
     def _is_signal_time(self, current_time):
         """Verifica si es momento de generar señal (al inicio de cada período de señal)"""
         if self.signal_timeframe == "1h":
