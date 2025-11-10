@@ -8,7 +8,7 @@ import joblib
 from data import fetch_ohlcv
 from indicators import add_indicators, add_fibonacci_levels
 
-def create_features_and_labels(df, lookahead=15, threshold=0.02):
+def create_features_and_labels(df, lookahead=10, threshold=0.01):
     """
     Crea features (X) y etiquetas (y) para entrenamiento.
     - lookahead: cuántas velas mirar al futuro.
@@ -48,7 +48,7 @@ def create_features_and_labels(df, lookahead=15, threshold=0.02):
 
 # ... (todo igual hasta create_features_and_labels) ...
 
-def train_ml_model(symbol="BTC/USDT:USDT", days=120):
+def train_ml_model(symbol="BTC/USDT:USDT", days=360):
     print("📥 Descargando datos históricos...")
     df_hist = fetch_ohlcv(symbol, "1h", limit=24*days)
     df_hist = add_indicators(df_hist)

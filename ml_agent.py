@@ -43,7 +43,7 @@ class MLAgent:
             proba = self.model.predict_proba(last_row)[0]
             confidence = max(proba)
             
-            if confidence < 0.5:
+            if confidence < 0.4:
                 return 'wait'
             return 'long' if pred == 1 else 'short' if pred == -1 else 'wait'
         except Exception as e:
