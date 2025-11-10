@@ -43,47 +43,47 @@ class CryptoAgent:
             tp_hit = last['close'] <= tp
         return sl_hit, tp_hit, sl, tp
 
-def _is_signal_time(self, current_time):
-    """Verifica si es momento de generar señal (al inicio de cada período de señal)"""
-    # Asegurar zona horaria UTC
-    if current_time.tzinfo is None:
-        current_time = current_time.tz_localize('UTC')
-    
-    if self.signal_timeframe == "1h":
-        return current_time.minute == 0
-    elif self.signal_timeframe == "4h":
-        return current_time.hour % 4 == 0 and current_time.minute == 0
-    elif self.signal_timeframe == "1d":
-        return current_time.hour == 0 and current_time.minute == 0
-    return True
-
-def _is_signal_still_valid(self, signal, current_price, current_atr):
-    """Verifica que la señal no esté vencida"""
-    # Asegurar zona horaria UTC en el tiempo de la señal
-    signal_time = signal['time']
-    if signal_time.tzinfo is None:
-        signal_time = signal_time.tz_localize('UTC')
-    
-    current_time = pd.Timestamp.now(tz='UTC')
-    
-    # 1. Tiempo máximo: 30 minutos para señales de 1h
-    signal_age = (current_time - signal_time).total_seconds() / 60
-    max_age = 30 if self.signal_timeframe == "1h" else 120
-    if signal_age > max_age:
-        return False
-    
-    # 2. Movimiento de precio: no más de 0.5 ATR desde la señal
-    price_move = abs(current_price - signal['price'])
-    if price_move > 0.5 * signal['atr']:
-        return False
-    
-    # 3. Dirección: el precio debe seguir en la dirección de la señal
-    if signal['direction'] == 'long' and current_price < signal['price']:
-        return False
-    if signal['direction'] == 'short' and current_price > signal['price']:
-        return False
+    def _is_signal_time(self, current_time):
+        """Verifica si es momento de generar señal (al inicio de cada período de señal)"""
+        # Asegurar zona horaria UTC
+        if current_time.tzinfo is None:
+            current_time = current_time.tz_localize('UTC')
         
-    return True
+        if self.signal_timeframe == "1h":
+            return current_time.minute == 0
+        elif self.signal_timeframe == "4h":
+            return current_time.hour % 4 == 0 and current_time.minute == 0
+        elif self.signal_timeframe == "1d":
+            return current_time.hour == 0 and current_time.minute == 0
+        return True
+
+    def _is_signal_still_valid(self, signal, current_price, current_atr):
+        """Verifica que la señal no esté vencida"""
+        # Asegurar zona horaria UTC en el tiempo de la señal
+        signal_time = signal['time']
+        if signal_time.tzinfo is None:
+            signal_time = signal_time.tz_localize('UTC')
+        
+        current_time = pd.Timestamp.now(tz='UTC')
+        
+        # 1. Tiempo máximo: 30 minutos para señales de 1h
+        signal_age = (current_time - signal_time).total_seconds() / 60
+        max_age = 30 if self.signal_timeframe == "1h" else 120
+        if signal_age > max_age:
+            return False
+        
+        # 2. Movimiento de precio: no más de 0.5 ATR desde la señal
+        price_move = abs(current_price - signal['price'])
+        if price_move > 0.5 * signal['atr']:
+            return False
+        
+        # 3. Dirección: el precio debe seguir en la dirección de la señal
+        if signal['direction'] == 'long' and current_price < signal['price']:
+            return False
+        if signal['direction'] == 'short' and current_price > signal['price']:
+            return False
+            
+        return True
 
     def _check_position_status(self):
         """Verifica posición en Binance (solo live)"""
@@ -126,7 +126,7 @@ def _is_signal_still_valid(self, signal, current_price, current_atr):
                         signal_time = df_signal.index[-1]
                         if signal_time.tzinfo is None:
                             signal_time = signal_time.tz_localize('UTC')
-                            
+
                         self.last_signal = {
                             'direction': signal_dir,
                             'price': df_signal['close'].iloc[-1],
