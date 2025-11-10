@@ -3,6 +3,10 @@ venv/
 .venv/
 env/
 
+__pycache__/
+*.pyc
+logs/
+
 # Archivos de configuración sensibles
 .env
 
