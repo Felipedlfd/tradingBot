@@ -28,19 +28,22 @@ class CryptoAgent:
         logging.info(f"🧠 Agente iniciado | Señales: {SIGNAL_TIMEFRAME} | Ejecución: {EXECUTION_TIMEFRAME}")
 
     def _should_exit_position(self, df, entry_price, position_type, atr_multiple=1.5):
-        """Simula cierre por SL/TP (solo para modo paper)"""
+        """Simula cierre por SL/TP considerando HIGH/LOW de la vela (más realista)"""
         last = df.iloc[-1]
         atr = last['atr']
+        
         if position_type == 'long':
             sl = entry_price - atr * atr_multiple
             tp = entry_price + atr * atr_multiple * 2
-            sl_hit = last['close'] <= sl
-            tp_hit = last['close'] >= tp
+            # Verificar si el precio TOCÓ el SL/TP durante la vela
+            sl_hit = last['low'] <= sl  # ¡Usa LOW en vez de CLOSE!
+            tp_hit = last['high'] >= tp  # ¡Usa HIGH en vez de CLOSE!
         else:  # short
             sl = entry_price + atr * atr_multiple
             tp = entry_price - atr * atr_multiple * 2
-            sl_hit = last['close'] >= sl
-            tp_hit = last['close'] <= tp
+            sl_hit = last['high'] >= sl  # ¡Usa HIGH en vez de CLOSE!
+            tp_hit = last['low'] <= tp  # ¡Usa LOW en vez de CLOSE!
+        
         return sl_hit, tp_hit, sl, tp
 
     def _is_signal_time(self, current_time):
@@ -106,6 +109,13 @@ class CryptoAgent:
             if df_exec.empty:
                 return
             df_exec = add_indicators(df_exec)
+            if self.position:
+                sl_hit, tp_hit, sl, tp = self._should_exit_position(
+                    df_exec, self.position['entry'], self.position['type'], self.params['atr_multiple']
+                )
+                logging.info(f"🔍 Posición abierta | Precio actual: ${current_price:.2f} | SL: ${sl:.2f} | TP: ${tp:.2f}")
+                logging.info(f"📊 Vela completa - HIGH: ${df_exec['high'].iloc[-1]:.2f} | LOW: ${df_exec['low'].iloc[-1]:.2f}")
+                logging.info(f"🎯 ¿SL tocado? {sl_hit} | ¿TP tocado? {tp_hit}")
             current_time = df_exec.index[-1]
             current_price = df_exec['close'].iloc[-1]
             
