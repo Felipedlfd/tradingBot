@@ -1,4 +1,3 @@
-# agent.py
 import pandas as pd
 import logging
 from config import SYMBOL, TRADING_MODE, INITIAL_CAPITAL, MODE, SIGNAL_TIMEFRAME, EXECUTION_TIMEFRAME
@@ -107,16 +106,12 @@ class CryptoAgent:
             # Descargar datos de ejecución (5m)
             df_exec = fetch_ohlcv(self.symbol, self.execution_timeframe)
             if df_exec.empty:
+                logging.warning("⚠️ Datos de ejecución vacíos, saltando ciclo")
                 return
             df_exec = add_indicators(df_exec)
-            if self.position:
-                sl_hit, tp_hit, sl, tp = self._should_exit_position(
-                    df_exec, self.position['entry'], self.position['type'], self.params['atr_multiple']
-                )
-                logging.info(f"🔍 Posición abierta | Precio actual: ${current_price:.2f} | SL: ${sl:.2f} | TP: ${tp:.2f}")
-                logging.info(f"📊 Vela completa - HIGH: ${df_exec['high'].iloc[-1]:.2f} | LOW: ${df_exec['low'].iloc[-1]:.2f}")
-                logging.info(f"🎯 ¿SL tocado? {sl_hit} | ¿TP tocado? {tp_hit}")
             current_time = df_exec.index[-1]
+            
+            # 💡 DEFINIR current_price AQUÍ (siempre existe si df_exec no está vacío)
             current_price = df_exec['close'].iloc[-1]
             
             # En live: verificar si la posición sigue abierta
@@ -132,15 +127,15 @@ class CryptoAgent:
                     df_signal = add_indicators(df_signal)
                     signal_dir = self.ml_agent.get_signal_from_dataframe(df_signal)
                     if signal_dir in ['long', 'short']:
-                        # 👇 AQUÍ: Asegurar zona horaria UTC
+                        # Asegurar zona horaria UTC
                         signal_time = df_signal.index[-1]
                         if signal_time.tzinfo is None:
                             signal_time = signal_time.tz_localize('UTC')
-
+                        
                         self.last_signal = {
                             'direction': signal_dir,
                             'price': df_signal['close'].iloc[-1],
-                            'time': df_signal.index[-1],
+                            'time': signal_time,
                             'atr': df_signal['atr'].iloc[-1]
                         }
                         logging.info(f"✅ Nueva señal {signal_dir.upper()} detectada")
@@ -156,6 +151,20 @@ class CryptoAgent:
                 else:
                     logging.info("⚠️ Señal obsoleta, ignorando...")
                     self.last_signal = None
+            
+            # 👇 SECCIÓN CORREGIDA DE DEPURACIÓN PARA POSICIÓN ABIERTA
+            if self.position is not None:
+                # Mostrar estado actual de la posición
+                sl_hit, tp_hit, sl, tp = self._should_exit_position(
+                    df_exec, self.position['entry'], self.position['type'], self.params['atr_multiple']
+                )
+                logging.info(f"🔍 Posición abierta | Precio actual: ${current_price:.2f} | SL: ${sl:.2f} | TP: ${tp:.2f}")
+                logging.info(f"📊 Vela completa - HIGH: ${df_exec['high'].iloc[-1]:.2f} | LOW: ${df_exec['low'].iloc[-1]:.2f}")
+                logging.info(f"🎯 ¿SL tocado? {sl_hit} | ¿TP tocado? {tp_hit}")
+                
+                # Cerrar en modo paper si se cumple SL/TP
+                if MODE == "paper" and (sl_hit or tp_hit):
+                    self._close_position(current_price, 'SL' if sl_hit else 'TP')
                     
         except Exception as e:
             logging.error(f"Error en run_once: {e}", exc_info=True)
@@ -168,6 +177,7 @@ class CryptoAgent:
         tp = entry_price + (entry_price - sl) * 2 if pos_type == 'long' else entry_price - (sl - entry_price) * 2
         size = calculate_position_size(self.capital, entry_price, sl, self.params['risk_per_trade'])
         if size <= 0:
+            logging.warning("⚠️ Tamaño de posición <= 0, operación cancelada")
             return
 
         # Enviar orden (OCO en live, simple en paper)
