@@ -33,6 +33,15 @@ class TradeExecutor:
         - En modo live + futuros: usa órdenes OCO si se proporcionan sl_price/tp_price
         - En modo live + spot: órdenes simples (spot no soporta OCO nativo)
         """
+       
+        if MODE == "live" and TRADING_MODE == "futures":
+            try:
+                # Establecer apalancamiento ANTES de ordenar
+                self.exchange.set_leverage(LEVERAGE, self.symbol)
+                print(f"⚙️ Apalancamiento configurado a {LEVERAGE}x para {self.symbol}")
+            except Exception as e:
+                logging.warning(f"⚠️ No se pudo establecer apalancamiento: {e}")
+        
         if MODE == "paper":
             print(f"[PAPER] {side.upper()} {amount:.6f} de {self.symbol}")
             return {"status": "filled", "price": price or 60000}
