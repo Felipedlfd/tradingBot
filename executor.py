@@ -11,6 +11,23 @@ class TradeExecutor:
         self._init_exchange()
         logging.info(f"💱 Ejecutor inicializado para {self.symbol} en modo {TRADING_MODE}")
 
+    def get_account_balance(self):
+        """Obtiene el saldo disponible en USDT para trading"""
+        try:
+            if TRADING_MODE == "futures":
+                # Para futures, obtener wallet balance
+                balance = self.exchange.fetch_balance()
+                usdt_balance = balance.get('USDT', {}).get('total', 0.0)
+                return float(usdt_balance)
+            else:
+                # Para spot
+                balance = self.exchange.fetch_balance()
+                usdt_balance = balance.get('USDT', {}).get('free', 0.0)
+                return float(usdt_balance)
+        except Exception as e:
+            logging.error(f"❌ Error al obtener saldo real: {str(e)}")
+            return 0.0
+    
     def _normalize_symbol(self, symbol):
         """
         Convierte el símbolo al formato correcto para ccxt con Binance USD-M Futures

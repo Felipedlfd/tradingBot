@@ -14,7 +14,6 @@ class CryptoAgent:
     def __init__(self):
         self.symbol = SYMBOL
         self.trading_mode = TRADING_MODE
-        self.capital = INITIAL_CAPITAL
         self.position = None
         self.trades = []
         self.trade_count = 0
@@ -24,8 +23,22 @@ class CryptoAgent:
         self.last_signal = None
         self.signal_timeframe = SIGNAL_TIMEFRAME
         self.execution_timeframe = EXECUTION_TIMEFRAME
-        logging.info(f"🧠 Agente iniciado | Señales: {SIGNAL_TIMEFRAME} | Ejecución: {EXECUTION_TIMEFRAME}")
         self.last_cleanup = pd.Timestamp.now(tz='UTC')
+        
+        # 🔑 ¡CLAVE PARA MODO LIVE!
+        if MODE == "live":
+            real_balance = self.executor.get_account_balance()
+            if real_balance > 0:
+                self.capital = real_balance
+                logging.info(f"💰 Capital real cargado: ${self.capital:.2f}")
+            else:
+                logging.warning("⚠️ No se pudo obtener saldo real. Usando INITIAL_CAPITAL como fallback.")
+                self.capital = INITIAL_CAPITAL
+        else:
+            self.capital = INITIAL_CAPITAL
+            logging.info(f"🎭 Capital en modo paper: ${self.capital:.2f}")
+        
+        logging.info(f"🧠 Agente iniciado | Señales: {SIGNAL_TIMEFRAME} | Ejecución: {EXECUTION_TIMEFRAME}")
 
     def _should_exit_position(self, df, entry_price, position_type, atr_multiple=1.5):
         """Simula cierre por SL/TP considerando HIGH/LOW de la vela (más realista)"""
@@ -115,6 +128,9 @@ class CryptoAgent:
         try:
             logging.info("💓 Evaluando mercado...")
             
+            # 🔑 Actualizar capital real en modo live
+            self._update_real_capital()
+
             # Descargar datos de ejecución (5m)
             df_exec = fetch_ohlcv(self.symbol, self.execution_timeframe)
             if df_exec.empty:
