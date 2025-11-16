@@ -12,9 +12,43 @@ class TradeExecutor:
         logging.info(f"💱 Ejecutor inicializado para {self.symbol} en modo {TRADING_MODE}")
 
     def _normalize_symbol(self, symbol):
-        """Convierte cualquier formato de símbolo al formato Binance API (BTCUSDT)"""
-        # Eliminar /, :, y convertir a mayúsculas sin separadores
-        normalized = symbol.replace("/", "").replace(":", "").replace("-", "").upper()
+        """
+        Convierte el símbolo al formato correcto para ccxt con Binance USD-M Futures
+        Ejemplos:
+        - "BTC/USDT" → "BTC/USDT:USDT"
+        - "BTCUSDT" → "BTC/USDT:USDT"
+        - "BTC/USDT:USDT" → "BTC/USDT:USDT" (ya correcto)
+        """
+        # Eliminar espacios y convertir a mayúsculas
+        symbol_clean = symbol.strip().upper()
+        
+        # Caso 1: Ya tiene el formato correcto
+        if symbol_clean.endswith(":USDT") and "/" in symbol_clean:
+            normalized = symbol_clean
+        # Caso 2: Tiene slash pero no :USDT (ej: "BTC/USDT")
+        elif "/" in symbol_clean and not symbol_clean.endswith(":USDT"):
+            base, quote = symbol_clean.split("/")
+            normalized = f"{base}/{quote}:USDT"
+        # Caso 3: Sin slash (ej: "BTCUSDT")
+        else:
+            # Extraer base (BTC) y quote (USDT)
+            if symbol_clean.startswith("BTC"):
+                base = "BTC"
+                quote = "USDT"
+            elif symbol_clean.startswith("ETH"):
+                base = "ETH"
+                quote = "USDT"
+            else:
+                # Intentar separar por primera aparición de USDT
+                if "USDT" in symbol_clean:
+                    base = symbol_clean.replace("USDT", "")
+                    quote = "USDT"
+                else:
+                    base = symbol_clean[:3]
+                    quote = symbol_clean[3:]
+            
+            normalized = f"{base}/{quote}:USDT"
+        
         logging.info(f"🔄 Normalizando símbolo: '{symbol}' → '{normalized}'")
         return normalized
 
