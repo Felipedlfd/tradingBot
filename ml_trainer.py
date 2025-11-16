@@ -46,9 +46,8 @@ def create_features_and_labels(df, lookahead=10, threshold=0.01):
     
     return X, y, feature_cols
 
-# ... (todo igual hasta create_features_and_labels) ...
-
-def train_ml_model(symbol="BTC/USDT:USDT", days=360):
+# ml_trainer.py
+def train_ml_model(symbol="BTC/USDT:USDT", days=30):
     print("📥 Descargando datos históricos...")
     df_hist = fetch_ohlcv(symbol, "1h", limit=24*days)
     df_hist = add_indicators(df_hist)
@@ -60,10 +59,10 @@ def train_ml_model(symbol="BTC/USDT:USDT", days=360):
     
     print("⚙️  Creando features históricos...")
     X_hist, y_hist, feature_cols = create_features_and_labels(
-        df_hist, lookahead=15, threshold=0.015
+        df_hist, lookahead=10, threshold=0.015
     )
     
-    # ✅ PASO CLAVE: Cargar trades reales como datos adicionales
+    # ✅ PASO CLAVE: Cargar trades reales COMO DATOS DE ENTRENAMIENTO
     from utils_ml import load_real_trades_as_labels
     df_real = load_real_trades_as_labels(symbol=symbol, min_pnl_abs=1.0)
     
@@ -77,15 +76,15 @@ def train_ml_model(symbol="BTC/USDT:USDT", days=360):
         y_real_list = []
         
         for _, trade in df_real.iterrows():
-            # Buscar la vela más cercana al timestamp del trade
+            # Buscar la vela MÁS CERCANA al timestamp del trade
             closest_idx = df_hist.index.get_indexer([trade['timestamp']], method='nearest')
             if closest_idx[0] >= 0 and closest_idx[0] < len(df_hist):
-                features = df_hist[feature_cols].iloc[closest_idx[0]]
+                features = df_hist.loc[df_hist.index[closest_idx[0]], feature_cols]
                 X_real_list.append(features)
-                y_real_list.append(trade['label'])
+                y_real_list.append(trade['label'])  # 1=ganó, -1=perdió
         
         if X_real_list:
-            X_real = pd.DataFrame(X_real_list)
+            X_real = pd.DataFrame(X_real_list, columns=feature_cols)
             y_real = pd.Series(y_real_list)
     
     # Combinar datos históricos + reales
@@ -101,11 +100,15 @@ def train_ml_model(symbol="BTC/USDT:USDT", days=360):
         print("❌ Pocos datos para entrenar.")
         return
     
-    # ... (resto igual: división, entrenamiento, guardado) ...
+    # Dividir train/test
+    from sklearn.model_selection import train_test_split
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=42, stratify=y
     )
     
+    # Entrenar modelo
+    print("🧠 Entrenando Random Forest...")
+    from sklearn.ensemble import RandomForestClassifier
     model = RandomForestClassifier(
         n_estimators=100,
         max_depth=10,
@@ -114,14 +117,18 @@ def train_ml_model(symbol="BTC/USDT:USDT", days=360):
     )
     model.fit(X_train, y_train)
     
+    # Evaluar
     y_pred = model.predict(X_test)
+    from sklearn.metrics import classification_report
     print("\n✅ Resultados del modelo:")
     print(classification_report(y_test, y_pred, target_names=['Short', 'Esperar', 'Long']))
     
+    # Guardar modelo y features
+    import joblib
     joblib.dump(model, 'ml_model.pkl')
     joblib.dump(feature_cols, 'feature_cols.pkl')
     print("\n💾 Modelo guardado como 'ml_model.pkl'")
-
+    
 if __name__ == "__main__":
     from config import SYMBOL, TRADING_MODE
     symbol_to_use = "BTC/USDT:USDT" if TRADING_MODE == "futures" else SYMBOL
