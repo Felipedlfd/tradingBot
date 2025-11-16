@@ -5,10 +5,18 @@ from config import BINANCE_API_KEY, BINANCE_API_SECRET, MODE, TRADING_MODE, LEVE
 
 class TradeExecutor:
     def __init__(self, symbol):
-        self.symbol = symbol
+        # ✅ SOLUCIÓN 1: Convertir símbolo al formato correcto de Binance API
+        self.symbol = self._normalize_symbol(symbol)
         self.exchange = None
         self._init_exchange()
-        logging.info(f"💱 Ejecutor inicializado para {symbol} en modo {TRADING_MODE}")
+        logging.info(f"💱 Ejecutor inicializado para {self.symbol} en modo {TRADING_MODE}")
+
+    def _normalize_symbol(self, symbol):
+        """Convierte cualquier formato de símbolo al formato Binance API (BTCUSDT)"""
+        # Eliminar /, :, y convertir a mayúsculas sin separadores
+        normalized = symbol.replace("/", "").replace(":", "").replace("-", "").upper()
+        logging.info(f"🔄 Normalizando símbolo: '{symbol}' → '{normalized}'")
+        return normalized
 
     def _init_exchange(self):
         """Inicializa la conexión con Binance y carga los mercados"""
@@ -25,15 +33,22 @@ class TradeExecutor:
             
             if TRADING_MODE == "futures":
                 self.exchange = ccxt.binanceusdm(exchange_config)
-                logging.info("🚀 Conectado a Binance USDⓈ-M Futures")
+                logging.info("🚀 Conectado a Binance USD-M Futures")
             else:
                 self.exchange = ccxt.binance(exchange_config)
                 logging.info("🚀 Conectado a Binance Spot")
             
-            # 🔑 CARGAR MERCADOS ANTES DE USARLOS (solución al primer error)
+            # Cargar mercados
             try:
                 self.exchange.load_markets()
                 logging.info("✅ Mercados cargados correctamente")
+                
+                # ✅ SOLUCIÓN 2: Verificar que el símbolo existe en los mercados
+                if self.symbol not in self.exchange.markets:
+                    logging.warning(f"⚠️ Símbolo {self.symbol} no encontrado en mercados")
+                    # Listar algunos símbolos similares
+                    similar_symbols = [s for s in self.exchange.symbols if self.symbol[:3] in s]
+                    logging.info(f"Símbolos similares disponibles: {similar_symbols[:5]}")
             except Exception as e:
                 logging.warning(f"⚠️ Error al cargar mercados: {str(e)}")
         else:
@@ -45,19 +60,16 @@ class TradeExecutor:
             return
         
         try:
-            # ✅ Asegurar que los mercados están cargados
-            if not hasattr(self.exchange, 'markets') or not self.exchange.markets:
-                self.exchange.load_markets()
-            
+            # ✅ SOLUCIÓN 3: Usar el símbolo normalizado
             market = self.exchange.market(self.symbol)
-            symbol_id = market['id']
+            symbol_id = market['id']  # Devuelve "BTCUSDT"
             
-            # ✅ Verificar que el símbolo existe en futures
-            if symbol_id not in self.exchange.markets:
-                logging.error(f"❌ Símbolo {symbol_id} no encontrado en mercados de Binance")
+            # Verificar que el símbolo soporta apalancamiento
+            if 'leverage' not in market['info']:
+                logging.warning(f"⚠️ El símbolo {self.symbol} no soporta apalancamiento")
                 return
             
-            # ✅ Configurar apalancamiento
+            # Configurar apalancamiento
             self.exchange.set_leverage(LEVERAGE, symbol_id)
             logging.info(f"⚙️ Apalancamiento configurado a {LEVERAGE}x para {self.symbol}")
         except Exception as e:
@@ -66,7 +78,8 @@ class TradeExecutor:
 
     def place_order(self, side, amount, price=None, sl_price=None, tp_price=None):
         """
-        Ejecuta órdenes con parámetros correctos para Binance Futures
+        Ejecuta órdenes en Binance USD-M Futures usando la API oficial
+        Documentación: https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api
         """
         if MODE == "paper":
             # Modo paper: solo imprimir
@@ -79,62 +92,100 @@ class TradeExecutor:
             return {"status": "filled", "price": price or 60000, "amount": amount}
         
         else:
-            # Modo live: conectar con Binance
             try:
                 if TRADING_MODE == "futures":
-                    # ✅ CARGAR MERCADOS SI ES NECESARIO
-                    if not hasattr(self.exchange, 'markets') or not self.exchange.markets:
-                        self.exchange.load_markets()
+                    # ✅ SOLUCIÓN 4: Usar el formato de símbolo correcto en todas las llamadas
+                    symbol = self.symbol  # Ya normalizado a "BTCUSDT"
                     
-                    # Configurar apalancamiento primero
-                    self._set_leverage()
+                    # 1. Abrir posición con orden de mercado
+                    logging.info(f"🔵 Abriendo posición MARKET: {side.upper()} {amount} {symbol}")
+                    market_order = self.exchange.create_order(
+                        symbol=symbol,
+                        type='MARKET',
+                        side=side.upper(),
+                        amount=amount
+                    )
+                    logging.info(f"✅ Posición abierta: {side.upper()} {amount:.6f} de {symbol} | ID: {market_order['id']}")
                     
-                    # ✅ SINTAXIS CORRECTA PARA ÓRDENES OCO EN BINANCE FUTURES
-                    if sl_price is not None and tp_price is not None:
-                        params = {
-                            'stopPrice': sl_price,           # Precio de activación del SL
-                            'stopLimitPrice': sl_price,      # Precio límite del SL
-                            'stopLimitTimeInForce': 'GTC'    # Good Till Cancelled
-                        }
-                        
-                        order = self.exchange.create_order(
-                            symbol=self.symbol,
-                            type='OCO',
-                            side=side.upper(),
+                    # 2. Crear órdenes SL/TP por separado
+                    order_ids = []
+                    
+                    if sl_price is not None:
+                        # ✅ SOLUCIÓN 5: Usar STOP_MARKET con closePosition=True
+                        sl_side = 'SELL' if side.upper() == 'BUY' else 'BUY'
+                        logging.info(f"🛑 Creando Stop Loss: {sl_side} {amount} @ {sl_price}")
+                        sl_order = self.exchange.create_order(
+                            symbol=symbol,
+                            type='STOP_MARKET',
+                            side=sl_side,
                             amount=amount,
-                            price=tp_price,                  # Precio del Take Profit
-                            params=params
+                            params={
+                                'stopPrice': sl_price,
+                                'closePosition': True,  # Cierra toda la posición
+                                'workingType': 'CONTRACT_PRICE',
+                                'priceProtect': True  # Protección contra slippage extremo
+                            }
                         )
-                        logging.info(f"✅ Orden OCO LIVE creada: {side.upper()} {amount:.6f} | SL: {sl_price:.2f} | TP: {tp_price:.2f}")
-                        return order
-                    else:
-                        # Sin OCO: orden de mercado simple
-                        order = self.exchange.create_market_order(self.symbol, side.upper(), amount)
-                        logging.info(f"✅ Orden LIVE simple: {side.upper()} {amount:.6f}")
-                        return order
+                        logging.info(f"🛑 Stop Loss creado | ID: {sl_order['id']} | Precio: {sl_price:.2f}")
+                        order_ids.append(sl_order['id'])
+                    
+                    if tp_price is not None:
+                        # ✅ SOLUCIÓN 6: Usar TAKE_PROFIT_MARKET con closePosition=True
+                        tp_side = 'SELL' if side.upper() == 'BUY' else 'BUY'
+                        logging.info(f"🎯 Creando Take Profit: {tp_side} {amount} @ {tp_price}")
+                        tp_order = self.exchange.create_order(
+                            symbol=symbol,
+                            type='TAKE_PROFIT_MARKET',
+                            side=tp_side,
+                            amount=amount,
+                            params={
+                                'stopPrice': tp_price,
+                                'closePosition': True,  # Cierra toda la posición
+                                'workingType': 'CONTRACT_PRICE',
+                                'priceProtect': True  # Protección contra slippage extremo
+                            }
+                        )
+                        logging.info(f"🎯 Take Profit creado | ID: {tp_order['id']} | Precio: {tp_price:.2f}")
+                        order_ids.append(tp_order['id'])
+                    
+                    return {
+                        'market_order': market_order,
+                        'sl_order_id': order_ids[0] if order_ids else None,
+                        'tp_order_id': order_ids[1] if len(order_ids) > 1 else None
+                    }
+                
                 else:
-                    # Spot: órdenes simples (no soporta OCO)
+                    # Spot: órdenes simples
                     order = self.exchange.create_market_order(self.symbol, side.upper(), amount)
                     logging.info(f"✅ Orden SPOT LIVE: {side.upper()} {amount:.6f}")
                     return order
+                    
             except Exception as e:
                 error_msg = f"❌ Error en orden LIVE ({side.upper()} {amount:.6f}): {str(e)}"
                 logging.error(error_msg)
                 
-                # Intentar obtener más información del error
-                if hasattr(e, 'response') and hasattr(e.response, 'text'):
-                    logging.error(f"Respuesta de Binance: {e.response.text}")
+                # ✅ SOLUCIÓN 7: Diagnóstico específico basado en errores comunes
+                if "symbol" in str(e).lower():
+                    logging.error("🔍 DIAGNÓSTICO: El formato del símbolo es incorrecto")
+                    logging.error("💡 SOLUCIÓN: Usa el formato Binance API: 'BTCUSDT' (sin slash)")
+                    logging.error(f"  Tu símbolo actual: '{self.symbol}'")
+                    logging.error("  Ejemplos correctos: 'BTCUSDT', 'ETHUSDT', 'BNBUSDT'")
                 
-                # Mostrar ayuda específica para errores comunes
-                if "unexpected keyword argument 'stopPrice'" in str(e):
-                    logging.error("🔍 SOLUCIÓN: Usa 'params' con 'stopPrice' para órdenes OCO en Binance Futures")
+                if "1013" in str(e):  # Código de error de Binance para símbolo inválido
+                    logging.error("🔍 DIAGNÓSTICO: Binance no reconoce el símbolo")
+                    logging.error("💡 SOLUCIÓN: Verifica el símbolo en la documentación oficial")
+                    logging.error("  https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api")
                 
-                # Notificar por Telegram en errores críticos
+                if "400" in str(e):
+                    logging.error("🔍 DIAGNÓSTICO: Parámetros incorrectos en la orden")
+                    logging.error("💡 SOLUCIÓN: Verifica que sl_price y tp_price sean números válidos")
+                    logging.error(f"  SL: {sl_price}, TP: {tp_price}")
+                
                 try:
                     from notifier import send_telegram_message
                     send_telegram_message(f"🚨 ERROR EN ORDEN\n{error_msg}\n{self.symbol}")
-                except Exception as telegram_e:
-                    logging.warning(f"⚠️ No se pudo enviar notificación por Telegram: {telegram_e}")
+                except:
+                    pass
                 
                 return None
 
@@ -144,12 +195,22 @@ class TradeExecutor:
             print(f"[PAPER] CIERRE {side.upper()} {amount:.6f} de {self.symbol}")
             return {"status": "filled"}
         
-        # En modo live, para futures, Binance ya cerró con OCO
         if TRADING_MODE == "futures":
-            logging.info("ℹ️ En futures, la posición se cierra automáticamente con OCO")
-            return {"status": "closed_by_exchange"}
+            try:
+                symbol = self.symbol  # Ya normalizado
+                order = self.exchange.create_order(
+                    symbol=symbol,
+                    type='MARKET',
+                    side=side.upper(),
+                    amount=amount,
+                    params={'reduceOnly': True}
+                )
+                logging.info(f"✅ Posición cerrada manualmente: {side.upper()} {amount:.6f} | ID: {order['id']}")
+                return order
+            except Exception as e:
+                logging.error(f"❌ Error al cerrar posición: {str(e)}")
+                return None
         else:
-            # Para spot, cerramos manualmente
             return self.place_order(side, amount)
 
     def get_positions(self):
@@ -158,12 +219,23 @@ class TradeExecutor:
             return []
         
         try:
-            # ✅ Asegurar que los mercados están cargados
-            if not hasattr(self.exchange, 'markets') or not self.exchange.markets:
-                self.exchange.load_markets()
-            
-            positions = self.exchange.fetch_positions([self.symbol])
+            symbol = self.symbol  # Ya normalizado
+            positions = self.exchange.fetch_positions([symbol])
             return [p for p in positions if float(p['contracts']) > 0]
         except Exception as e:
             logging.warning(f"⚠️ Error al obtener posiciones: {str(e)}")
             return []
+
+    def cancel_order(self, order_id):
+        """Cancela una orden específica"""
+        if MODE != "live" or not self.exchange:
+            return None
+        
+        try:
+            symbol = self.symbol
+            result = self.exchange.cancel_order(order_id, symbol)
+            logging.info(f"🚫 Orden cancelada: {order_id} para {symbol}")
+            return result
+        except Exception as e:
+            logging.warning(f"⚠️ Error al cancelar orden {order_id}: {str(e)}")
+            return None
