@@ -224,23 +224,29 @@ class TradeExecutor:
                 return None
 
     def close_position(self, amount, side="sell"):
-        """Cierra posición (usado principalmente en modo paper)"""
+        """Cierra posición y cancela órdenes asociadas"""
         if MODE == "paper":
             print(f"[PAPER] CIERRE {side.upper()} {amount:.6f} de {self.symbol}")
             return {"status": "filled"}
         
         if TRADING_MODE == "futures":
             try:
-                symbol = self.symbol  # Ya normalizado
+                # 1. Cancelar órdenes asociadas PRIMERO
+                logging.info("🔍 Cancelando órdenes asociadas antes de cerrar posición...")
+                self.cancel_associated_orders(self.symbol)
+                
+                # 2. Cerrar posición
+                logging.info(f"CloseOperation: {side.upper()} {amount:.6f} de {self.symbol}")
                 order = self.exchange.create_order(
-                    symbol=symbol,
+                    symbol=self.symbol,
                     type='MARKET',
                     side=side.upper(),
                     amount=amount,
                     params={'reduceOnly': True}
                 )
-                logging.info(f"✅ Posición cerrada manualmente: {side.upper()} {amount:.6f} | ID: {order['id']}")
+                logging.info(f"✅ Posición cerrada manualmente | ID: {order['id']}")
                 return order
+                
             except Exception as e:
                 logging.error(f"❌ Error al cerrar posición: {str(e)}")
                 return None
@@ -273,3 +279,28 @@ class TradeExecutor:
         except Exception as e:
             logging.warning(f"⚠️ Error al cancelar orden {order_id}: {str(e)}")
             return None
+        
+    def cancel_associated_orders(self, position_symbol):
+        """Cancela todas las órdenes asociadas a un símbolo (SL/TP)"""
+        try:
+            # Obtener todas las órdenes abiertas para el símbolo
+            open_orders = self.exchange.fetch_open_orders(position_symbol)
+            
+            canceled_count = 0
+            for order in open_orders:
+                # Cancelar órdenes de tipo STOP_MARKET o TAKE_PROFIT_MARKET
+                if order['type'] in ['STOP_MARKET', 'TAKE_PROFIT_MARKET', 'STOP', 'TAKE_PROFIT']:
+                    self.cancel_order(order['id'])
+                    canceled_count += 1
+                    logging.info(f"🚫 Orden asociada cancelada | ID: {order['id']} | Tipo: {order['type']} | Precio: {order.get('stopPrice', 'N/A')}")
+            
+            if canceled_count > 0:
+                logging.info(f"✅ {canceled_count} órdenes asociadas canceladas para {position_symbol}")
+            else:
+                logging.info(f"ℹ️ No hay órdenes asociadas para cancelar en {position_symbol}")
+                
+            return canceled_count
+            
+        except Exception as e:
+            logging.error(f"❌ Error al cancelar órdenes asociadas: {str(e)}")
+            return 0

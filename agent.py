@@ -25,6 +25,7 @@ class CryptoAgent:
         self.signal_timeframe = SIGNAL_TIMEFRAME
         self.execution_timeframe = EXECUTION_TIMEFRAME
         logging.info(f"🧠 Agente iniciado | Señales: {SIGNAL_TIMEFRAME} | Ejecución: {EXECUTION_TIMEFRAME}")
+        self.last_cleanup = pd.Timestamp.now(tz='UTC')
 
     def _should_exit_position(self, df, entry_price, position_type, atr_multiple=1.5):
         """Simula cierre por SL/TP considerando HIGH/LOW de la vela (más realista)"""
@@ -88,16 +89,27 @@ class CryptoAgent:
         return True
 
     def _check_position_status(self):
-        """Verifica posición en Binance (solo live)"""
+        """Verifica posición en Binance y limpia órdenes huérfanas"""
         try:
             if MODE == "live" and TRADING_MODE == "futures":
+                # 1. Verificar posiciones abiertas
                 positions = self.executor.exchange.fetch_positions([self.symbol])
                 open_positions = [p for p in positions if float(p['contracts']) > 0]
+                
+                # 2. Si no hay posiciones pero tenemos registro local, cerrar
                 if not open_positions and self.position:
+                    logging.warning("⚠️ Posición cerrada externamente. Limpiando estado local...")
                     current_price = self.executor.exchange.fetch_ticker(self.symbol)['last']
-                    self._close_position(current_price, 'closed_by_exchange')
+                    self._close_position(current_price, 'closed_externally')
+                    return
+                
+                # 3. LIMPIEZA AUTOMÁTICA: Cancelar órdenes huérfanas
+                if not open_positions:
+                    logging.info("🧹 Limpiando órdenes huérfanas (sin posición abierta)...")
+                    self.executor.cancel_associated_orders(self.symbol)
+                
         except Exception as e:
-            logging.warning(f"No se pudo verificar posición: {e}")
+            logging.warning(f"No se pudo verificar posición: {str(e)}")
 
     def run_once(self):
         try:
@@ -166,6 +178,12 @@ class CryptoAgent:
                 if MODE == "paper" and (sl_hit or tp_hit):
                     self._close_position(current_price, 'SL' if sl_hit else 'TP')
                     
+            # 🔁 LIMPIEZA PERIÓDICA: Cada 5 minutos
+            if hasattr(self, 'last_cleanup') and (pd.Timestamp.now(tz='UTC') - self.last_cleanup).total_seconds() > 300:
+                logging.info("🧹 Ejecutando limpieza periódica de órdenes huérfanas...")
+                self.executor.cancel_associated_orders(self.symbol)
+                self.last_cleanup = pd.Timestamp.now(tz='UTC')
+
         except Exception as e:
             logging.error(f"Error en run_once: {e}", exc_info=True)
 
