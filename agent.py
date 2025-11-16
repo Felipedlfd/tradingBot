@@ -40,6 +40,42 @@ class CryptoAgent:
         
         logging.info(f"🧠 Agente iniciado | Señales: {SIGNAL_TIMEFRAME} | Ejecución: {EXECUTION_TIMEFRAME}")
 
+    def _update_real_capital(self):
+        """Actualiza el capital con el saldo real (solo en modo live)"""
+        if MODE != "live" or not self.executor.exchange:
+            return
+        
+        try:
+            # Obtener saldo actual según el modo de trading
+            if TRADING_MODE == "futures":
+                # Para USD-M Futures, obtener balance de wallet
+                balance = self.executor.exchange.fetch_balance()
+                usdt_balance = balance.get('USDT', {}).get('total', 0.0)
+            else:
+                # Para spot
+                balance = self.executor.exchange.fetch_balance()
+                usdt_balance = balance.get('USDT', {}).get('free', 0.0)
+            
+            real_balance = float(usdt_balance)
+            
+            # Actualizar capital si hay cambios significativos (más de $0.01)
+            if abs(real_balance - self.capital) > 0.01:
+                old_capital = self.capital
+                self.capital = real_balance
+                logging.info(f"💰 Capital actualizado | Antes: ${old_capital:.2f} | Ahora: ${self.capital:.2f}")
+            
+            # Protección adicional: si el capital es muy bajo
+            if self.capital < 10.0:  # $10 mínimo para operar
+                logging.warning(f"⚠️ CAPITAL MUY BAJO: ${self.capital:.2f}. Reduciendo riesgo...")
+                self.params['risk_per_trade'] = min(0.005, self.params['risk_per_trade'])  # Máximo 0.5%
+                
+        except Exception as e:
+            logging.warning(f"⚠️ Error al actualizar capital real: {str(e)}")
+            # No detener el bot, pero usar un valor conservador
+            if self.capital <= 0:
+                logging.error("❌ CAPITAL NO DISPONIBLE. USANDO VALOR DE SEGURIDAD $100.")
+                self.capital = 100.0
+    
     def _should_exit_position(self, df, entry_price, position_type, atr_multiple=1.5):
         """Simula cierre por SL/TP considerando HIGH/LOW de la vela (más realista)"""
         last = df.iloc[-1]
@@ -126,10 +162,11 @@ class CryptoAgent:
 
     def run_once(self):
         try:
-            logging.info("💓 Evaluando mercado...")
-            
             # 🔑 Actualizar capital real en modo live
             self._update_real_capital()
+            
+            logging.info("💓 Evaluando mercado...")
+            
 
             # Descargar datos de ejecución (5m)
             df_exec = fetch_ohlcv(self.symbol, self.execution_timeframe)
