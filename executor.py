@@ -11,7 +11,7 @@ class TradeExecutor:
         logging.info(f"💱 Ejecutor inicializado para {symbol} en modo {TRADING_MODE}")
 
     def _init_exchange(self):
-        """Inicializa la conexión con Binance según el modo de trading"""
+        """Inicializa la conexión con Binance y carga los mercados"""
         if MODE == "live":
             exchange_config = {
                 'apiKey': BINANCE_API_KEY,
@@ -29,20 +29,35 @@ class TradeExecutor:
             else:
                 self.exchange = ccxt.binance(exchange_config)
                 logging.info("🚀 Conectado a Binance Spot")
+            
+            # 🔑 CARGAR MERCADOS ANTES DE USARLOS (solución al primer error)
+            try:
+                self.exchange.load_markets()
+                logging.info("✅ Mercados cargados correctamente")
+            except Exception as e:
+                logging.warning(f"⚠️ Error al cargar mercados: {str(e)}")
         else:
             logging.info("🎭 Modo PAPER: Sin conexión real a Binance")
 
     def _set_leverage(self):
         """Configura el apalancamiento para futures (solo en modo live)"""
-        if MODE != "live" or TRADING_MODE != "futures":
+        if MODE != "live" or TRADING_MODE != "futures" or not self.exchange:
             return
         
         try:
-            # Obtener información del mercado
+            # ✅ Asegurar que los mercados están cargados
+            if not hasattr(self.exchange, 'markets') or not self.exchange.markets:
+                self.exchange.load_markets()
+            
             market = self.exchange.market(self.symbol)
             symbol_id = market['id']
             
-            # Configurar apalancamiento
+            # ✅ Verificar que el símbolo existe en futures
+            if symbol_id not in self.exchange.markets:
+                logging.error(f"❌ Símbolo {symbol_id} no encontrado en mercados de Binance")
+                return
+            
+            # ✅ Configurar apalancamiento
             self.exchange.set_leverage(LEVERAGE, symbol_id)
             logging.info(f"⚙️ Apalancamiento configurado a {LEVERAGE}x para {self.symbol}")
         except Exception as e:
@@ -51,10 +66,7 @@ class TradeExecutor:
 
     def place_order(self, side, amount, price=None, sl_price=None, tp_price=None):
         """
-        Ejecuta órdenes:
-        - En modo paper: solo imprime
-        - En modo live + futuros: usa órdenes OCO si se proporcionan sl_price/tp_price
-        - En modo live + spot: órdenes simples (spot no soporta OCO nativo)
+        Ejecuta órdenes con parámetros correctos para Binance Futures
         """
         if MODE == "paper":
             # Modo paper: solo imprimir
@@ -70,15 +82,19 @@ class TradeExecutor:
             # Modo live: conectar con Binance
             try:
                 if TRADING_MODE == "futures":
-                    # Para futuros: soporte OCO
+                    # ✅ CARGAR MERCADOS SI ES NECESARIO
+                    if not hasattr(self.exchange, 'markets') or not self.exchange.markets:
+                        self.exchange.load_markets()
+                    
+                    # Configurar apalancamiento primero
+                    self._set_leverage()
+                    
+                    # ✅ SINTAXIS CORRECTA PARA ÓRDENES OCO EN BINANCE FUTURES
                     if sl_price is not None and tp_price is not None:
-                        # Configurar apalancamiento primero
-                        self._set_leverage()
-                        
-                        # Crear orden OCO
                         params = {
-                            'stopLimitPrice': sl_price,
-                            'stopLimitTimeInForce': 'GTC'
+                            'stopPrice': sl_price,           # Precio de activación del SL
+                            'stopLimitPrice': sl_price,      # Precio límite del SL
+                            'stopLimitTimeInForce': 'GTC'    # Good Till Cancelled
                         }
                         
                         order = self.exchange.create_order(
@@ -86,8 +102,7 @@ class TradeExecutor:
                             type='OCO',
                             side=side.upper(),
                             amount=amount,
-                            price=tp_price,          # Take Profit (orden límite)
-                            stopPrice=sl_price,      # Stop Loss trigger
+                            price=tp_price,                  # Precio del Take Profit
                             params=params
                         )
                         logging.info(f"✅ Orden OCO LIVE creada: {side.upper()} {amount:.6f} | SL: {sl_price:.2f} | TP: {tp_price:.2f}")
@@ -107,12 +122,19 @@ class TradeExecutor:
                 logging.error(error_msg)
                 
                 # Intentar obtener más información del error
-                if hasattr(e, 'response'):
+                if hasattr(e, 'response') and hasattr(e.response, 'text'):
                     logging.error(f"Respuesta de Binance: {e.response.text}")
                 
+                # Mostrar ayuda específica para errores comunes
+                if "unexpected keyword argument 'stopPrice'" in str(e):
+                    logging.error("🔍 SOLUCIÓN: Usa 'params' con 'stopPrice' para órdenes OCO en Binance Futures")
+                
                 # Notificar por Telegram en errores críticos
-                from notifier import send_telegram_message
-                send_telegram_message(f"🚨 ERROR EN ORDEN\n{error_msg}\n{self.symbol}")
+                try:
+                    from notifier import send_telegram_message
+                    send_telegram_message(f"🚨 ERROR EN ORDEN\n{error_msg}\n{self.symbol}")
+                except Exception as telegram_e:
+                    logging.warning(f"⚠️ No se pudo enviar notificación por Telegram: {telegram_e}")
                 
                 return None
 
@@ -123,12 +145,12 @@ class TradeExecutor:
             return {"status": "filled"}
         
         # En modo live, para futures, Binance ya cerró con OCO
-        # Para spot, cerramos manualmente
-        if TRADING_MODE == "spot":
-            return self.place_order(side, amount)
-        else:
+        if TRADING_MODE == "futures":
             logging.info("ℹ️ En futures, la posición se cierra automáticamente con OCO")
             return {"status": "closed_by_exchange"}
+        else:
+            # Para spot, cerramos manualmente
+            return self.place_order(side, amount)
 
     def get_positions(self):
         """Obtiene posiciones abiertas (solo para futures en modo live)"""
@@ -136,6 +158,10 @@ class TradeExecutor:
             return []
         
         try:
+            # ✅ Asegurar que los mercados están cargados
+            if not hasattr(self.exchange, 'markets') or not self.exchange.markets:
+                self.exchange.load_markets()
+            
             positions = self.exchange.fetch_positions([self.symbol])
             return [p for p in positions if float(p['contracts']) > 0]
         except Exception as e:
