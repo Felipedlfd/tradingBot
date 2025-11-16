@@ -1,7 +1,8 @@
-def calculate_position_size(capital, entry_price, stop_loss, risk_fraction=0.01):
+def calculate_position_size(capital, entry_price, sl, risk_fraction, leverage=1):
     risk_amount = capital * risk_fraction
-    risk_per_unit = abs(entry_price - stop_loss)
-    if risk_per_unit == 0:
-        return 0
-    size = risk_amount / risk_per_unit
-    return size
+    risk_per_unit = abs(entry_price - sl)
+    base_size = risk_amount / risk_per_unit
+    
+    # Ajustar por apalancamiento
+    adjusted_size = base_size * leverage
+    return adjusted_size

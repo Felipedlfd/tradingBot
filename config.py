@@ -15,3 +15,4 @@ TRADING_MODE = "futures"  # "spot" o "futures"
 OPTIMIZE_EVERY = 10
 SIGNAL_TIMEFRAME = "1h"    # Para generar señales
 EXECUTION_TIMEFRAME = "5m" # Para ejecutar órdenes
+LEVERAGE = 3  # Apalancamiento máximo deseado (3x)
