@@ -344,45 +344,39 @@ class TradeExecutor:
             return None
         
     def cancel_associated_orders(self, position_symbol):
-        """Cancela todas las órdenes asociadas a un símbolo (SL/TP)"""
+        """Cancela todas las órdenes asociadas a un símbolo (SL/TP) - Optimizado para BTC"""
         try:
-            # ✅ SOLUCIÓN 1: Usar el símbolo en formato Binance API (BTCUSDT)
-            binance_symbol = position_symbol.replace("/", "").replace(":USDT", "") if ":USDT" in position_symbol else position_symbol.replace("/", "")
+            # ✅ SOLUCIÓN: Especificar SIEMPRE el símbolo para evitar el warning y ahorrar límite de tasa
+            binance_symbol = self._get_binance_symbol(position_symbol)
             
-            # ✅ SOLUCIÓN 2: Obtener TODAS las órdenes abiertas (no solo para el símbolo)
-            open_orders = self.exchange.fetch_open_orders()
+            logging.info(f"🧹 Limpiando órdenes para {binance_symbol}...")
+            
+            # ✅ Obtener SOLO órdenes del símbolo específico
+            open_orders = self.exchange.fetch_open_orders(binance_symbol)
             
             canceled_count = 0
             for order in open_orders:
-                # ✅ SOLUCIÓN 3: Filtrar por tipos de órdenes de protección
-                if order.get('symbol', '').startswith(binance_symbol) and \
-                order['type'] in ['STOP_MARKET', 'TAKE_PROFIT_MARKET', 'STOP', 'TAKE_PROFIT']:
-                    
-                    # ✅ SOLUCIÓN 4: Cancelar incluso si hay errores
+                # ✅ Filtrar solo órdenes de protección (SL/TP)
+                if order['type'] in ['STOP_MARKET', 'TAKE_PROFIT_MARKET', 'STOP', 'TAKE_PROFIT']:
                     try:
                         self.cancel_order(order['id'])
                         canceled_count += 1
-                        logging.info(f"🚫 Orden huérfana cancelada | ID: {order['id']} | Tipo: {order['type']} | Precio: {order.get('stopPrice', 'N/A')}")
+                        logging.info(f"✅ Órden cancelada | ID: {order['id']} | Tipo: {order['type']} | Precio: {order.get('stopPrice', 'N/A')}")
                     except Exception as e:
                         logging.warning(f"⚠️ Error cancelando orden {order['id']}: {str(e)}")
             
-            # ✅ SOLUCIÓN 5: Forzar limpieza si no se encontraron órdenes
-            if canceled_count == 0:
-                logging.warning("🧹 No se encontraron órdenes huérfanas. Forzando búsqueda exhaustiva...")
-                all_orders = self.exchange.fetch_orders(symbol=binance_symbol, limit=50)
-                for order in all_orders:
-                    if order['status'] in ['open', 'partially_filled'] and \
-                    order['type'] in ['STOP_MARKET', 'TAKE_PROFIT_MARKET']:
-                        try:
-                            self.cancel_order(order['id'])
-                            logging.info(f"🚫 Orden huérfana FORZADA cancelada | ID: {order['id']}")
-                            canceled_count += 1
-                        except Exception as e:
-                            logging.warning(f"⚠️ Error cancelando orden forzada {order['id']}: {str(e)}")
-            
-            logging.info(f"✅ Total órdenes canceladas: {canceled_count}")
+            logging.info(f"✅ Limpieza completada para {binance_symbol} | Órdenes canceladas: {canceled_count}")
             return canceled_count
             
         except Exception as e:
             logging.error(f"❌ Error crítico en limpieza de órdenes: {str(e)}")
             return 0
+        
+    def _get_binance_symbol(self, symbol):
+        """Convierte el símbolo al formato correcto para Binance API"""
+        # Para USD-M Futures, Binance usa formato sin slash y sin :USDT
+        if TRADING_MODE == "futures":
+            return symbol.replace("/", "").replace(":USDT", "").replace("-", "")
+        else:
+            # Para spot, usar formato con slash
+            return symbol.replace(":USDT", "")
