@@ -12,21 +12,48 @@ class TradeExecutor:
         logging.info(f"💱 Ejecutor inicializado para {self.symbol} en modo {TRADING_MODE}")
 
     def get_account_balance(self):
-        """Obtiene el saldo disponible en USDT para trading"""
+        """Obtiene el saldo real disponible en USDT (preciso para futures)"""
         try:
             if TRADING_MODE == "futures":
-                # Para futures, obtener wallet balance
+                logging.debug("🔍 Obteniendo balance de USD-M Futures...")
                 balance = self.exchange.fetch_balance()
-                usdt_balance = balance.get('USDT', {}).get('total', 0.0)
-                return float(usdt_balance)
+                
+                logging.debug(f"📊 Balance completo: {balance}")
+                
+                # Método 1: Buscar USDT directamente
+                if 'USDT' in balance and isinstance(balance['USDT'], dict):
+                    usdt_balance = float(balance['USDT'].get('total', 0.0))
+                    logging.info(f"✅ Balance USDT obtenido: ${usdt_balance:.2f}")
+                    return usdt_balance
+                
+                # Método 2: Buscar en info
+                if hasattr(balance, 'info'):
+                    info = balance.info
+                    if isinstance(info, dict):
+                        assets = info.get('assets', [])
+                        for asset in assets:
+                            if isinstance(asset, dict) and asset.get('asset') == 'USDT':
+                                wallet_balance = float(asset.get('walletBalance', 0.0))
+                                logging.info(f"✅ Balance wallet USDT: ${wallet_balance:.2f}")
+                                return wallet_balance
+                
+                logging.warning("⚠️ No se encontró balance USDT en la respuesta")
+                return 0.0
+                
             else:
                 # Para spot
                 balance = self.exchange.fetch_balance()
-                usdt_balance = balance.get('USDT', {}).get('free', 0.0)
-                return float(usdt_balance)
+                return float(balance.get('USDT', {}).get('free', 0.0))
+                
         except Exception as e:
-            logging.error(f"❌ Error al obtener saldo real: {str(e)}")
-            return 0.0
+            logging.error(f"❌ Error al obtener balance: {str(e)}")
+            try:
+                # Fallback simple
+                balance = self.exchange.fetch_balance()
+                return float(balance.get('USDT', {}).get('total', 0.0))
+            except Exception as fallback_e:
+                logging.error(f"❌ Fallback también falló: {str(fallback_e)}")
+                return 0.0
     
     def _normalize_symbol(self, symbol):
         """
@@ -241,31 +268,50 @@ class TradeExecutor:
                 return None
 
     def close_position(self, amount, side="sell"):
-        """Cierra posición y cancela órdenes asociadas"""
+        """Cierra posición con manejo de errores robusto"""
         if MODE == "paper":
             print(f"[PAPER] CIERRE {side.upper()} {amount:.6f} de {self.symbol}")
             return {"status": "filled"}
         
         if TRADING_MODE == "futures":
             try:
-                # 1. Cancelar órdenes asociadas PRIMERO
-                logging.info("🔍 Cancelando órdenes asociadas antes de cerrar posición...")
+                # ✅ SOLUCIÓN: Verificar posición antes de cerrar
+                positions = self.exchange.fetch_positions([self.symbol])
+                open_positions = [p for p in positions if float(p['contracts']) > 0]
+                
+                if not open_positions:
+                    logging.warning("ℹ️ Posición ya cerrada. Sin acción necesaria.")
+                    return {"status": "already_closed"}
+                
+                # Cancelar órdenes asociadas primero
                 self.cancel_associated_orders(self.symbol)
                 
-                # 2. Cerrar posición
+                # Cerrar posición con manejo de reduceOnly
                 logging.info(f"CloseOperation: {side.upper()} {amount:.6f} de {self.symbol}")
                 order = self.exchange.create_order(
                     symbol=self.symbol,
                     type='MARKET',
                     side=side.upper(),
                     amount=amount,
-                    params={'reduceOnly': True}
+                    params={
+                        'reduceOnly': True,
+                        'newOrderRespType': 'RESULT'
+                    }
                 )
-                logging.info(f"✅ Posición cerrada manualmente | ID: {order['id']}")
+                logging.info(f"✅ Posición cerrada | ID: {order['id']} | Ejecutado: {order['executedQty']}")
                 return order
                 
             except Exception as e:
-                logging.error(f"❌ Error al cerrar posición: {str(e)}")
+                error_str = str(e)
+                
+                # ✅ SOLUCIÓN: Manejar error específico de ReduceOnly
+                if "-2022" in error_str or "ReduceOnly Order is rejected" in error_str:
+                    logging.warning("⚠️ ReduceOnly rechazado (posición ya cerrada). Verificando estado actual...")
+                    # Verificar estado actual y sincronizar
+                    self._check_position_status()  # Llamar al método de verificación
+                    return {"status": "already_closed"}
+                
+                logging.error(f"❌ Error al cerrar posición: {error_str}")
                 return None
         else:
             return self.place_order(side, amount)
@@ -300,24 +346,43 @@ class TradeExecutor:
     def cancel_associated_orders(self, position_symbol):
         """Cancela todas las órdenes asociadas a un símbolo (SL/TP)"""
         try:
-            # Obtener todas las órdenes abiertas para el símbolo
-            open_orders = self.exchange.fetch_open_orders(position_symbol)
+            # ✅ SOLUCIÓN 1: Usar el símbolo en formato Binance API (BTCUSDT)
+            binance_symbol = position_symbol.replace("/", "").replace(":USDT", "") if ":USDT" in position_symbol else position_symbol.replace("/", "")
+            
+            # ✅ SOLUCIÓN 2: Obtener TODAS las órdenes abiertas (no solo para el símbolo)
+            open_orders = self.exchange.fetch_open_orders()
             
             canceled_count = 0
             for order in open_orders:
-                # Cancelar órdenes de tipo STOP_MARKET o TAKE_PROFIT_MARKET
-                if order['type'] in ['STOP_MARKET', 'TAKE_PROFIT_MARKET', 'STOP', 'TAKE_PROFIT']:
-                    self.cancel_order(order['id'])
-                    canceled_count += 1
-                    logging.info(f"🚫 Orden asociada cancelada | ID: {order['id']} | Tipo: {order['type']} | Precio: {order.get('stopPrice', 'N/A')}")
+                # ✅ SOLUCIÓN 3: Filtrar por tipos de órdenes de protección
+                if order.get('symbol', '').startswith(binance_symbol) and \
+                order['type'] in ['STOP_MARKET', 'TAKE_PROFIT_MARKET', 'STOP', 'TAKE_PROFIT']:
+                    
+                    # ✅ SOLUCIÓN 4: Cancelar incluso si hay errores
+                    try:
+                        self.cancel_order(order['id'])
+                        canceled_count += 1
+                        logging.info(f"🚫 Orden huérfana cancelada | ID: {order['id']} | Tipo: {order['type']} | Precio: {order.get('stopPrice', 'N/A')}")
+                    except Exception as e:
+                        logging.warning(f"⚠️ Error cancelando orden {order['id']}: {str(e)}")
             
-            if canceled_count > 0:
-                logging.info(f"✅ {canceled_count} órdenes asociadas canceladas para {position_symbol}")
-            else:
-                logging.info(f"ℹ️ No hay órdenes asociadas para cancelar en {position_symbol}")
-                
+            # ✅ SOLUCIÓN 5: Forzar limpieza si no se encontraron órdenes
+            if canceled_count == 0:
+                logging.warning("🧹 No se encontraron órdenes huérfanas. Forzando búsqueda exhaustiva...")
+                all_orders = self.exchange.fetch_orders(symbol=binance_symbol, limit=50)
+                for order in all_orders:
+                    if order['status'] in ['open', 'partially_filled'] and \
+                    order['type'] in ['STOP_MARKET', 'TAKE_PROFIT_MARKET']:
+                        try:
+                            self.cancel_order(order['id'])
+                            logging.info(f"🚫 Orden huérfana FORZADA cancelada | ID: {order['id']}")
+                            canceled_count += 1
+                        except Exception as e:
+                            logging.warning(f"⚠️ Error cancelando orden forzada {order['id']}: {str(e)}")
+            
+            logging.info(f"✅ Total órdenes canceladas: {canceled_count}")
             return canceled_count
             
         except Exception as e:
-            logging.error(f"❌ Error al cancelar órdenes asociadas: {str(e)}")
+            logging.error(f"❌ Error crítico en limpieza de órdenes: {str(e)}")
             return 0

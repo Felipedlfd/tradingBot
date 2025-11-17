@@ -16,3 +16,5 @@ OPTIMIZE_EVERY = 10
 SIGNAL_TIMEFRAME = "1h"    # Para generar señales
 EXECUTION_TIMEFRAME = "5m" # Para ejecutar órdenes
 LEVERAGE = 3  # Apalancamiento máximo deseado (3x)
+UPDATE_CAPITAL_AFTER_EACH_TRADE = True
+UPDATE_CAPITAL_EVERY_SECONDS = 30  # Frecuencia adicional de actualización
