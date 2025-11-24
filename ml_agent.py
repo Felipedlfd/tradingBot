@@ -49,3 +49,12 @@ class MLAgent:
         except Exception as e:
             logging.error(f"Error en ML: {e}")
             return 'wait'
+        
+            # ✅ Umbral más bajo para shorts (mercado bajista)
+            if pred == -1:  # Short
+                min_confidence = 0.45  # En vez de 0.5
+            else:
+                min_confidence = 0.5
+            
+            if confidence < min_confidence:
+                return 'wait'

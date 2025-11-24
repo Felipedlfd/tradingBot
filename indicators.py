@@ -37,4 +37,11 @@ def add_fibonacci_levels(df, window=50):
     df['fib_786'] = recent_high - 0.786 * df['fib_range']
     df['fib_100'] = recent_low  # 1.0
     
+    # ✅ NUEVO: Indicadores para mercados bajistas
+    df['down_volume_ratio'] = (df['volume'] * (df['close'] < df['open']).astype(int)) / df['volume'].rolling(20).mean()
+    df['down_trend_strength'] = (df['close'] < df['ema50']).astype(int) * (df['ema50'] < df['ema200']).astype(int)
+    
+    # ✅ NUEVO: Volatilidad en bajadas
+    df['down_volatility'] = df['atr'] * (df['close'] < df['open']).astype(int)
+
     return df

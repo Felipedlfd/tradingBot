@@ -380,3 +380,30 @@ class TradeExecutor:
         else:
             # Para spot, usar formato con slash
             return symbol.replace(":USDT", "")
+        
+    # En executor.py
+def cancel_all_associated_orders(self, symbol):
+    """Cancela TODAS las órdenes asociadas a un símbolo (no solo SL/TP)"""
+    try:
+        binance_symbol = self._get_binance_symbol(symbol)
+        logging.info(f"🔍 Buscando órdenes abiertas para {binance_symbol}...")
+        
+        # Obtener TODAS las órdenes abiertas para el símbolo
+        open_orders = self.exchange.fetch_open_orders(binance_symbol)
+        
+        canceled_count = 0
+        for order in open_orders:
+            try:
+                # Cancelar cualquier orden abierta (SL, TP, límites no ejecutadas)
+                self.exchange.cancel_order(order['id'], binance_symbol)
+                canceled_count += 1
+                logging.info(f"🚫 Orden cancelada | ID: {order['id']} | Tipo: {order['type']} | Precio: {order.get('price', 'N/A')}")
+            except Exception as e:
+                logging.warning(f"⚠️ Error cancelando orden {order['id']}: {str(e)}")
+        
+        logging.info(f"✅ Total órdenes canceladas para {binance_symbol}: {canceled_count}")
+        return canceled_count
+        
+    except Exception as e:
+        logging.error(f"❌ Error al cancelar órdenes asociadas: {str(e)}")
+        return 0

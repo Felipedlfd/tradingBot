@@ -291,6 +291,11 @@ class CryptoAgent:
 
     def _close_position(self, price, reason):
         try:
+            # ✅ PASO 1: Cancelar TODAS las órdenes asociadas ANTES de cerrar
+            if MODE == "live" and TRADING_MODE == "futures":
+                logging.info("🧹 Cancelando TODAS las órdenes asociadas antes de cerrar posición...")
+                self.executor.cancel_all_associated_orders(self.symbol)
+           
             # Calcular PnL con datos locales (para logging)
             pnl = (price - self.position['entry']) * self.position['size']
             if self.position['type'] == 'short':

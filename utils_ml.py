@@ -3,7 +3,7 @@ import pandas as pd
 import json
 from pathlib import Path
 
-def load_real_trades_as_labels(symbol="BTC/USDT:USDT", min_pnl_abs=1.0):
+def load_real_trades_as_labels(symbol="BTC/USDT:USDT", min_pnl_abs=0):
     """
     Usa real_trades.json (filtrado) en vez de trades.json.
     """
