@@ -1,4 +1,3 @@
-# ml_trainer.py
 import pandas as pd
 import numpy as np
 import logging
@@ -8,13 +7,14 @@ import json
 from datetime import datetime
 from pathlib import Path
 from config import SYMBOL, TRADING_MODE
-from data import fetch_ohlcv, add_indicators
+from data import fetch_ohlcv  # ✅ Solo fetch_ohlcv viene de data.py
+from indicators import add_indicators  # ✅ add_indicators viene de indicators.py
 from utils_ml import load_real_trades_as_labels
 from risk_manager import calculate_position_size
 from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import classification_report
-from sklearn.utils.class_weight import compute_class_weight  # Import para balanceo de clases
+from sklearn.utils.class_weight import compute_class_weight
 
 def create_features_and_labels(df, lookahead=10, threshold=0.015):
     """
