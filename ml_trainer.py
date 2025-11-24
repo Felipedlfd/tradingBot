@@ -134,9 +134,9 @@ def train_ml_model(symbol="BTC/USDT:USDT", days=30):
     )
     
     # 💡 ✅ BALANCEO DE CLASES
-    classes = sorted(set(y_train))
+    classes = np.array(sorted(set(y_train)))  # ✅ CONVERTIR A NUMPY ARRAY
     class_weights = compute_class_weight('balanced', classes=classes, y=y_train)
-    class_weight_dict = dict(zip(classes, class_weights))
+    class_weight_dict = dict(zip(classes.tolist(), class_weights.tolist()))  # ✅ Convertir de vuelta a lista para el dict
     print(f"⚖️ Pesos de clases calculados: {class_weight_dict}")
     
     # 💡 ✅ PONDERACIÓN POR IMPACTO
