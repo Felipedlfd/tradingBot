@@ -139,29 +139,66 @@ def train_ml_model(symbol="BTC/USDT:USDT", days=30):
     class_weight_dict = dict(zip(classes.tolist(), class_weights.tolist()))  # ✅ Convertir de vuelta a lista para el dict
     print(f"⚖️ Pesos de clases calculados: {class_weight_dict}")
     
-    # 💡 ✅ PONDERACIÓN POR IMPACTO
+    # 💡 ✅ PONDERACIÓN POR IMPACTO (ROBUSTA)
     sample_weights = np.ones(len(X_train))
-    
+
     if not X_real.empty:
         print("📊 Preparando ponderación por impacto de trades...")
         
         # Identificar índices de trades reales en entrenamiento
-        real_indices = np.array([i for i in range(len(X_train)) if i >= len(X_train) - len(X_real)])
+        real_count = min(len(X_real), len(X_train))
+        real_indices = np.arange(len(X_train) - real_count, len(X_train))
         
         if len(real_indices) > 0:
+            print(f"  🔍 Procesando {len(real_indices)} trades reales para ponderación...")
+            
             for i, idx in enumerate(real_indices):
-                if i < len(df_real) and idx < len(sample_weights):
-                    pnl = abs(df_real.iloc[i]['pnl'])
-                    sample_weights[idx] = max(0.1, pnl)
+                if idx >= len(sample_weights) or i >= len(df_real):
+                    continue
+                
+                try:
+                    # ✅ EXTRAER PnL CON MANEJO DE ERRORES
+                    trade = df_real.iloc[i]
+                    pnl_value = None
+                    
+                    # Intentar diferentes nombres para el PnL
+                    for pnl_key in ['pnl', 'PnL', 'profit', 'gain']:
+                        if pnl_key in trade and pd.notna(trade[pnl_key]):
+                            pnl_value = trade[pnl_key]
+                            break
+                    
+                    # Valor por defecto si no se encuentra
+                    if pnl_value is None:
+                        logging.debug(f"ℹ️ Trade {i} sin PnL. Usando valor por defecto.")
+                        pnl_value = 1.0  # Valor por defecto razonable
+                    
+                    # Asegurar que es numérico
+                    if not isinstance(pnl_value, (int, float)):
+                        pnl_value = float(str(pnl_value).replace(',', '.'))
+                    
+                    # Calcular peso
+                    weight = max(0.1, abs(pnl_value))
+                    sample_weights[idx] = weight
+                    
+                    # Logging para diagnóstico
+                    if i < 5:  # Solo los primeros 5 para no saturar logs
+                        logging.debug(f"  📈 Trade {i} | PnL: {pnl_value:.2f} | Peso: {weight:.2f}")
+                        
+                except Exception as e:
+                    logging.warning(f"⚠️ Error en trade {i}: {str(e)}. Usando peso 0.5")
+                    sample_weights[idx] = 0.5
             
             # Normalizar pesos
             min_weight = sample_weights.min()
             max_weight = sample_weights.max()
             if max_weight > min_weight:
-                sample_weights = 0.1 + 0.9 * (sample_weights - min_weight) / (max_weight - min_weight)
+                original_range = max_weight - min_weight
+                sample_weights = 0.1 + 0.9 * (sample_weights - min_weight) / original_range
+                print(f"  ✅ Pesos normalizados: {min_weight:.2f} - {max_weight:.2f} → 0.10 - 1.00")
+            else:
+                print(f"  ℹ️ Todos los pesos son iguales ({min_weight:.2f}). Sin normalización necesaria.")
             
-            print(f"  ✅ Pesos de impacto calculados: {len(sample_weights)} muestras")
-            print(f"  📈 Rango de pesos: {sample_weights.min():.2f} - {sample_weights.max():.2f}")
+            print(f"  📊 Rango final de pesos: {sample_weights.min():.2f} - {sample_weights.max():.2f}")
     
     # Entrenar modelo
     print("🧠 Entrenando Random Forest con clases balanceadas y ponderación de impacto...")
