@@ -144,7 +144,7 @@ class CryptoAgent:
                 elif not position_exists_remotely and position_exists_locally:
                     logging.warning("⚠️ Posición cerrada externamente. Limpiando estado local y órdenes...")
                     # ✅ SOLUCIÓN: Cancelar órdenes ANTES de cerrar estado local
-                    self.executor.cancel_associated_orders(self.symbol)
+                    self.executor.cancel_all_associated_orders(self.symbol)
                     # Forzar cierre de posición local
                     current_price = self.executor.exchange.fetch_ticker(self.symbol)['last']
                     self._close_position(current_price, 'closed_externally')
@@ -152,7 +152,7 @@ class CryptoAgent:
                 
                 # 3. Si no hay posición abierta, limpiar órdenes huérfanas
                 if not position_exists_remotely:
-                    self.executor.cancel_associated_orders(self.symbol)
+                    self.executor.cancel_all_associated_orders(self.symbol)
                     
         except Exception as e:
             logging.warning(f"⚠️ Error al verificar posición: {str(e)}")
@@ -231,7 +231,7 @@ class CryptoAgent:
             # 🔁 LIMPIEZA PERIÓDICA: Cada 5 minutos
             if hasattr(self, 'last_cleanup') and (pd.Timestamp.now(tz='UTC') - self.last_cleanup).total_seconds() > 300:
                 logging.info("🧹 Ejecutando limpieza periódica de órdenes huérfanas...")
-                self.executor.cancel_associated_orders(self.symbol)
+                self.executor.cancel_all_associated_orders(self.symbol)
                 self.last_cleanup = pd.Timestamp.now(tz='UTC')
 
         except Exception as e:
