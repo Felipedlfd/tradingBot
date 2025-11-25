@@ -207,8 +207,8 @@ class CryptoAgent:
             return True
         
         try:
-            # Obtener margen disponible real
-            account = self.executor.exchange.fetch_account_info()
+            # ✅ Usar el método correcto para Binance USD-M Futures
+            account = self.executor.exchange.fapiPrivate_get_account()
             margin_balance = float(account['totalMarginBalance'])
             available_balance = float(account['availableBalance'])
             
@@ -224,6 +224,8 @@ class CryptoAgent:
             return True
         except Exception as e:
             logging.error(f"❌ Error verificando margen: {str(e)}")
+            # Mostrar métodos disponibles para diagnóstico
+            logging.debug(f"Métodos disponibles: {dir(self.executor.exchange)}")
             return True  # Permitir operación en caso de error
 
     def run_once(self):

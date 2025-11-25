@@ -190,13 +190,27 @@ class TradeExecutor:
                 return None
 
     def get_account_balance(self):
+        """Obtiene el saldo real disponible en USDT (preciso para futures)"""
         try:
             if TRADING_MODE == "futures":
-                balance = self.exchange.fetch_balance()
-                return float(balance.get('USDT', {}).get('total', 0.0))
+                # ✅ Método CORRECTO para Binance USD-M Futures
+                account_info = self.exchange.fapiPrivate_get_account()
+                assets = account_info.get('assets', [])
+                
+                for asset in assets:
+                    if asset.get('asset') == 'USDT':
+                        return float(asset.get('walletBalance', 0.0))
+                
+                return 0.0
             else:
+                # Para spot
                 balance = self.exchange.fetch_balance()
                 return float(balance.get('USDT', {}).get('free', 0.0))
         except Exception as e:
             logging.error(f"❌ Error al obtener balance: {str(e)}")
-            return 0.0
+            try:
+                # Fallback más simple
+                balance = self.exchange.fetch_balance()
+                return float(balance.get('USDT', {}).get('total', 0.0))
+            except:
+                return 0.0
