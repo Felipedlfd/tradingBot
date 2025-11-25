@@ -207,10 +207,10 @@ class CryptoAgent:
             return True
         
         try:
-            # ✅ Usar el método correcto para Binance USD-M Futures
-            account = self.executor.exchange.fapiPrivate_get_account()
-            margin_balance = float(account['totalMarginBalance'])
-            available_balance = float(account['availableBalance'])
+            # ✅ MÉTODO CORRECTO EN CCXT
+            account = self.executor.exchange.fetch_balance()
+            margin_balance = account.get('total', 0)
+            available_balance = account.get('free', 0)
             
             # Alerta si el margen está por debajo del 10%
             if available_balance < margin_balance * 0.1:
@@ -224,8 +224,6 @@ class CryptoAgent:
             return True
         except Exception as e:
             logging.error(f"❌ Error verificando margen: {str(e)}")
-            # Mostrar métodos disponibles para diagnóstico
-            logging.debug(f"Métodos disponibles: {dir(self.executor.exchange)}")
             return True  # Permitir operación en caso de error
 
     def run_once(self):
