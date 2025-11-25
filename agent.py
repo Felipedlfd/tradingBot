@@ -207,18 +207,11 @@ class CryptoAgent:
             return True
         
         try:
-            # ✅ MÉTODO CORRECTO EN CCXT
-            account = self.executor.exchange.fetch_balance()
-            margin_balance = account.get('total', 0)
-            available_balance = account.get('free', 0)
+            # ✅ MÉTODO ROBUSTO PARA BINANCE USD-M FUTURES
+            balance = self.executor.get_account_balance()
             
-            # Alerta si el margen está por debajo del 10%
-            if available_balance < margin_balance * 0.1:
-                logging.warning(
-                    f"⚠️ MARGEN CRÍTICAMENTE BAJO | "
-                    f"Disponible: ${available_balance:.2f} | "
-                    f"Total: ${margin_balance:.2f}"
-                )
+            if balance < 10.0:  # Mínimo $10 para operar
+                logging.warning(f"⚠️ CAPITAL INSUFICIENTE: ${balance:.2f}. Necesitas al menos $10 para operar.")
                 return False
             
             return True
