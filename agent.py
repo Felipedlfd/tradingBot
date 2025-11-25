@@ -1,6 +1,6 @@
 import pandas as pd
 import logging
-from config import SYMBOL, TRADING_MODE, INITIAL_CAPITAL, MODE, SIGNAL_TIMEFRAME, EXECUTION_TIMEFRAME
+from config import SYMBOL, TRADING_MODE, INITIAL_CAPITAL, MODE, SIGNAL_TIMEFRAME, EXECUTION_TIMEFRAME, LEVERAGE
 from data import fetch_ohlcv
 from indicators import add_indicators
 from risk_manager import calculate_position_size
@@ -247,6 +247,17 @@ class CryptoAgent:
         if size <= 0:
             logging.warning("⚠️ Tamaño de posición <= 0, operación cancelada")
             return
+
+        # ✅ VERIFICACIÓN FINAL: margen suficiente
+        required_margin = (size * entry_price) / LEVERAGE
+        if required_margin > self.capital * 0.95:
+            logging.critical(
+                f"❌ IMPOSIBLE ABRIR POSICIÓN | "
+                f"Margen requerido: ${required_margin:.2f} | "
+                f"Capital disponible: ${self.capital:.2f} | "
+                f"Tamaño ajustado a 0"
+            )
+            return  # ¡NO ENVIAR ORDEN!
 
         # Enviar orden (OCO en live, simple en paper)
         if MODE == "live":
