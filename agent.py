@@ -1,6 +1,9 @@
 import pandas as pd
+import numpy as np
 import logging
-from config import SYMBOL, TRADING_MODE, INITIAL_CAPITAL, MODE, SIGNAL_TIMEFRAME, EXECUTION_TIMEFRAME, LEVERAGE
+import time
+from datetime import datetime
+from config import SYMBOL, TRADING_MODE, INITIAL_CAPITAL, MODE, SIGNAL_TIMEFRAME, EXECUTION_TIMEFRAME, LEVERAGE, RISK_PER_TRADE
 from data import fetch_ohlcv
 from indicators import add_indicators
 from risk_manager import calculate_position_size
@@ -14,6 +17,7 @@ class CryptoAgent:
     def __init__(self):
         self.symbol = SYMBOL
         self.trading_mode = TRADING_MODE
+        self.capital = INITIAL_CAPITAL
         self.position = None
         self.trades = []
         self.trade_count = 0
@@ -24,15 +28,20 @@ class CryptoAgent:
         self.signal_timeframe = SIGNAL_TIMEFRAME
         self.execution_timeframe = EXECUTION_TIMEFRAME
         self.last_cleanup = pd.Timestamp.now(tz='UTC')
+        self.last_capital_update = pd.Timestamp.now(tz='UTC')
         
-        # 🔑 ¡CLAVE PARA MODO LIVE!
+        # Inicializar capital según modo
         if MODE == "live":
-            real_balance = self.executor.get_account_balance()
-            if real_balance > 0:
-                self.capital = real_balance
-                logging.info(f"💰 Capital real cargado: ${self.capital:.2f}")
-            else:
-                logging.warning("⚠️ No se pudo obtener saldo real. Usando INITIAL_CAPITAL como fallback.")
+            try:
+                real_balance = self.executor.get_account_balance()
+                if real_balance > 0:
+                    self.capital = real_balance
+                    logging.info(f"💰 Capital real cargado: ${self.capital:.2f}")
+                else:
+                    logging.warning("⚠️ No se pudo obtener saldo real. Usando INITIAL_CAPITAL como fallback.")
+                    self.capital = INITIAL_CAPITAL
+            except Exception as e:
+                logging.warning(f"⚠️ Error al obtener saldo real: {str(e)}. Usando INITIAL_CAPITAL.")
                 self.capital = INITIAL_CAPITAL
         else:
             self.capital = INITIAL_CAPITAL
@@ -40,29 +49,6 @@ class CryptoAgent:
         
         logging.info(f"🧠 Agente iniciado | Señales: {SIGNAL_TIMEFRAME} | Ejecución: {EXECUTION_TIMEFRAME}")
 
-    def _update_real_capital(self):
-        """Actualiza el capital con el saldo real de Binance"""
-        if MODE != "live" or not hasattr(self.executor, 'exchange') or not self.executor.exchange:
-            return
-        
-        try:
-            # ✅ Obtener saldo REAL incluyendo todas las comisiones y fees
-            real_balance = self.executor.get_account_balance()
-            
-            # Solo actualizar si hay cambio significativo (>0.01 USDT)
-            if abs(real_balance - self.capital) > 0.01:
-                old_capital = self.capital
-                self.capital = real_balance
-                logging.info(f"💰 CAPITAL ACTUALIZADO | Antes: ${old_capital:.2f} | Ahora: ${self.capital:.2f} | Diferencia: ${self.capital - old_capital:.2f}")
-            
-            # Protección: si el capital es muy bajo
-            if self.capital < 10.0:  # $10 mínimo
-                logging.warning(f"⚠️ CAPITAL MUY BAJO: ${self.capital:.2f}. Reduciendo riesgo...")
-                self.params['risk_per_trade'] = 0.005  # 0.5% máximo
-                
-        except Exception as e:
-            logging.error(f"❌ Error al actualizar capital real: {str(e)}")
-    
     def _should_exit_position(self, df, entry_price, position_type, atr_multiple=1.5):
         """Simula cierre por SL/TP considerando HIGH/LOW de la vela (más realista)"""
         last = df.iloc[-1]
@@ -125,46 +111,133 @@ class CryptoAgent:
         return True
 
     def _check_position_status(self):
-        """Verifica posición en Binance y limpia órdenes huérfanas"""
+        """Verifica posición en Binance (solo live)"""
         try:
             if MODE == "live" and TRADING_MODE == "futures":
-                # 1. Obtener posiciones actuales
                 positions = self.executor.exchange.fetch_positions([self.symbol])
                 open_positions = [p for p in positions if float(p['contracts']) > 0]
                 
-                # 2. Verificar si hay discrepancia con el estado local
-                position_exists_remotely = len(open_positions) > 0
-                position_exists_locally = self.position is not None
-                
-                if position_exists_remotely and not position_exists_locally:
-                    logging.warning("⚠️ Posición abierta en Binance pero no en el bot. Syncronizando...")
-                    # Aquí podrías reconstruir el estado local basado en Binance
-                    self._sync_position_from_exchange(open_positions[0])
-                
-                elif not position_exists_remotely and position_exists_locally:
+                # Si no hay posición abierta pero tenemos registro local
+                if not open_positions and self.position:
                     logging.warning("⚠️ Posición cerrada externamente. Limpiando estado local y órdenes...")
-                    # ✅ SOLUCIÓN: Cancelar órdenes ANTES de cerrar estado local
+                    # Cancelar órdenes asociadas primero
                     self.executor.cancel_all_associated_orders(self.symbol)
                     # Forzar cierre de posición local
                     current_price = self.executor.exchange.fetch_ticker(self.symbol)['last']
                     self._close_position(current_price, 'closed_externally')
                     return
                 
-                # 3. Si no hay posición abierta, limpiar órdenes huérfanas
-                if not position_exists_remotely:
+                # Si no hay posición abierta, limpiar órdenes huérfanas
+                if not open_positions:
                     self.executor.cancel_all_associated_orders(self.symbol)
                     
         except Exception as e:
-            logging.warning(f"⚠️ Error al verificar posición: {str(e)}")
+            logging.warning(f"No se pudo verificar posición: {e}")
+
+    def _update_real_capital(self):
+        """Actualiza el capital con el saldo real (solo en modo live)"""
+        if MODE != "live" or not self.executor.exchange:
+            return
+        
+        try:
+            # Actualizar cada 60 segundos para mayor precisión
+            current_time = pd.Timestamp.now(tz='UTC')
+            if (current_time - self.last_capital_update).total_seconds() < 60:
+                return
+            
+            self.last_capital_update = current_time
+            
+            # Obtener saldo actual según el modo de trading
+            if TRADING_MODE == "futures":
+                balance = self.executor.exchange.fetch_balance()
+                usdt_balance = balance.get('USDT', {}).get('total', 0.0)
+            else:
+                balance = self.executor.exchange.fetch_balance()
+                usdt_balance = balance.get('USDT', {}).get('free', 0.0)
+            
+            real_balance = float(usdt_balance)
+            
+            # Actualizar capital si hay cambios significativos (>0.01 USDT)
+            if abs(real_balance - self.capital) > 0.01:
+                old_capital = self.capital
+                self.capital = real_balance
+                logging.info(f"💰 Capital actualizado | Antes: ${old_capital:.2f} | Ahora: ${self.capital:.2f}")
+            
+            # Protección adicional: si el capital es muy bajo
+            if self.capital < 10.0:  # $10 mínimo para operar
+                logging.warning(f"⚠️ CAPITAL MUY BAJO: ${self.capital:.2f}. Reduciendo riesgo...")
+                self.params['risk_per_trade'] = 0.005  # 0.5% máximo
+                
+        except Exception as e:
+            logging.warning(f"⚠️ Error al actualizar capital real: {str(e)}")
+            # No detener el bot, pero usar un valor conservador
+            if self.capital <= 0:
+                logging.error("❌ CAPITAL NO DISPONIBLE. USANDO VALOR DE SEGURIDAD $100.")
+                self.capital = 100.0
+
+    def _diagnose_connection(self):
+        """Verifica conexión y estado de Binance en tiempo real"""
+        try:
+            if MODE != "live" or not self.executor.exchange:
+                return
+            
+            logging.info("🔍 DIAGNÓSTICO DE CONEXIÓN:")
+            
+            # 1. Tiempo del servidor
+            server_time = self.executor.exchange.fetch_time()
+            local_time = pd.Timestamp.now().timestamp() * 1000
+            time_diff = abs(server_time - local_time) / 1000
+            logging.info(f"  ⏱️ Diferencia de tiempo: {time_diff:.1f} segundos")
+            
+            # 2. Saldo actual
+            balance = self.executor.get_account_balance()
+            logging.info(f"  💰 Saldo actual: ${balance:.2f}")
+            
+            # 3. Posiciones abiertas
+            positions = self.executor.exchange.fetch_positions([self.symbol])
+            open_positions = [p for p in positions if float(p['contracts']) > 0]
+            logging.info(f"  📈 Posiciones abiertas: {len(open_positions)}")
+            
+        except Exception as e:
+            logging.warning(f"⚠️ Error en diagnóstico: {str(e)}")
+
+    def _check_margin_safety(self):
+        """Verifica que haya margen suficiente antes de operar"""
+        if MODE != "live" or TRADING_MODE != "futures":
+            return True
+        
+        try:
+            # Obtener margen disponible real
+            account = self.executor.exchange.fetch_account_info()
+            margin_balance = float(account['totalMarginBalance'])
+            available_balance = float(account['availableBalance'])
+            
+            # Alerta si el margen está por debajo del 10%
+            if available_balance < margin_balance * 0.1:
+                logging.warning(
+                    f"⚠️ MARGEN CRÍTICAMENTE BAJO | "
+                    f"Disponible: ${available_balance:.2f} | "
+                    f"Total: ${margin_balance:.2f}"
+                )
+                return False
+            
+            return True
+        except Exception as e:
+            logging.error(f"❌ Error verificando margen: {str(e)}")
+            return True  # Permitir operación en caso de error
 
     def run_once(self):
         try:
-            # 🔑 Actualizar capital real en modo live
+            # ✅ VERIFICACIÓN DE MARGEN ANTES DE CUALQUIER OPERACIÓN
+            if MODE == "live" and not self._check_margin_safety():
+                logging.warning("🛑 OPERACIÓN CANCELADA: margen insuficiente")
+                return
+            
+            self._diagnose_connection()
             self._update_real_capital()
-
+            
             logging.info("💓 Evaluando mercado...")
             
-
             # Descargar datos de ejecución (5m)
             df_exec = fetch_ohlcv(self.symbol, self.execution_timeframe)
             if df_exec.empty:
@@ -214,7 +287,7 @@ class CryptoAgent:
                     logging.info("⚠️ Señal obsoleta, ignorando...")
                     self.last_signal = None
             
-            # 👇 SECCIÓN CORREGIDA DE DEPURACIÓN PARA POSICIÓN ABIERTA
+            # 👇 SECCIÓN DE DEPURACIÓN PARA POSICIÓN ABIERTA
             if self.position is not None:
                 # Mostrar estado actual de la posición
                 sl_hit, tp_hit, sl, tp = self._should_exit_position(
@@ -227,13 +300,15 @@ class CryptoAgent:
                 # Cerrar en modo paper si se cumple SL/TP
                 if MODE == "paper" and (sl_hit or tp_hit):
                     self._close_position(current_price, 'SL' if sl_hit else 'TP')
+            
+            # 👇 LIMPIEZA PERIÓDICA DE ÓRDENES HUÉRFANAS (CORREGIDO)
+            if MODE == "live":
+                current_time = pd.Timestamp.now(tz='UTC')
+                if (current_time - self.last_cleanup).total_seconds() >= 60:
+                    logging.info("🧹 Ejecutando limpieza periódica de órdenes huérfanas...")
+                    self.executor.cancel_all_associated_orders(self.symbol)  # ✅ ¡CORREGIDO!
+                    self.last_cleanup = current_time
                     
-            # 🔁 LIMPIEZA PERIÓDICA: Cada 5 minutos
-            if hasattr(self, 'last_cleanup') and (pd.Timestamp.now(tz='UTC') - self.last_cleanup).total_seconds() > 300:
-                logging.info("🧹 Ejecutando limpieza periódica de órdenes huérfanas...")
-                self.executor.cancel_all_associated_orders(self.symbol)
-                self.last_cleanup = pd.Timestamp.now(tz='UTC')
-
         except Exception as e:
             logging.error(f"Error en run_once: {e}", exc_info=True)
 
@@ -243,7 +318,7 @@ class CryptoAgent:
         atr = last['atr']
         sl = entry_price - atr * self.params['atr_multiple'] if pos_type == 'long' else entry_price + atr * self.params['atr_multiple']
         tp = entry_price + (entry_price - sl) * 2 if pos_type == 'long' else entry_price - (sl - entry_price) * 2
-        size = calculate_position_size(self.capital, entry_price, sl, self.params['risk_per_trade'])
+        size = calculate_position_size(self.capital, entry_price, sl, self.params['risk_per_trade'], LEVERAGE)
         if size <= 0:
             logging.warning("⚠️ Tamaño de posición <= 0, operación cancelada")
             return
@@ -261,6 +336,10 @@ class CryptoAgent:
 
         # Enviar orden (OCO en live, simple en paper)
         if MODE == "live":
+            # Añadir logging detallado para diagnóstico
+            logging.info(f"🚀 ENVIANDO ORDEN A BINANCE | {pos_type.upper()} {size:.6f} {self.symbol}")
+            logging.info(f"  📊 SL: {sl} | TP: {tp} | Modo: {TRADING_MODE}")
+            
             self.executor.place_order(
                 side='buy' if pos_type == 'long' else 'sell',
                 amount=size,
@@ -301,51 +380,31 @@ class CryptoAgent:
         send_telegram_message(msg)
 
     def _close_position(self, price, reason):
-        try:
-            # ✅ PASO 1: Cancelar TODAS las órdenes asociadas ANTES de cerrar
-            if MODE == "live" and TRADING_MODE == "futures":
-                logging.info("🧹 Cancelando TODAS las órdenes asociadas antes de cerrar posición...")
-                self.executor.cancel_all_associated_orders(self.symbol)
-           
-            # Calcular PnL con datos locales (para logging)
-            pnl = (price - self.position['entry']) * self.position['size']
-            if self.position['type'] == 'short':
-                pnl = -pnl
-            
-            # Guardar capital anterior para logging
-            old_capital = self.capital
-            
-            # ✅ ACTUALIZAR CAPITAL DESDE BINANCE (después de cerrar)
-            self._update_real_capital()
-            
-            # Calcular PnL real basado en cambio de capital
-            real_pnl = self.capital - old_capital
-            trade_record = {
-                'exit_price': price,
-                'pnl': real_pnl,
-                'reason': reason,
-                'commission_included': True
-            }
-            self.trades[-1].update(trade_record)
-            save_trade(self.trades[-1])
-            
-            # Cerrar posición en el exchange (si es necesario)
-            close_side = 'sell' if self.position['type'] == 'long' else 'buy'
-            self.executor.close_position(self.position['size'], close_side)
-            
-            # Mensaje con PnL real (incluyendo comisiones)
-            from datetime import datetime
-            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            msg = (
-                f"CloseOperation ({reason})\n"
-                f"Fecha: {current_time}\n"
-                f"PnL REAL: ${real_pnl:.2f} (Capital: ${old_capital:.2f} → ${self.capital:.2f})"
-            )
-            logging.info(msg.replace('\n', ' | '))
-            send_telegram_message(msg)
-            
-            self.position = None
-            self.trade_count += 1
-            
-        except Exception as e:
-            logging.error(f"❌ Error al cerrar posición y actualizar capital: {str(e)}")
+        pnl = (price - self.position['entry']) * self.position['size']
+        if self.position['type'] == 'short':
+            pnl = -pnl
+        self.capital += pnl
+        trade_record = {
+            'exit_price': price,
+            'pnl': pnl,
+            'reason': reason
+        }
+        self.trades[-1].update(trade_record)
+        save_trade(self.trades[-1])
+        close_side = 'sell' if self.position['type'] == 'long' else 'buy'
+        self.executor.close_position(self.position['size'], close_side)
+        
+        # ✅ ACTUALIZAR CAPITAL DESDE BINANCE (después de cerrar)
+        self._update_real_capital()
+        
+        # Mensaje de cierre
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        msg = (
+            f"CloseOperation ({reason})\n"
+            f"Fecha: {current_time}\n"
+            f"PnL: ${pnl:.2f} | Capital: ${self.capital:.2f}"
+        )
+        logging.info(msg.replace('\n', ' | '))
+        send_telegram_message(msg)
+        self.position = None
+        self.trade_count += 1
