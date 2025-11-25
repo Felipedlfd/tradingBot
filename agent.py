@@ -49,6 +49,12 @@ class CryptoAgent:
         
         logging.info(f"🧠 Agente iniciado | Señales: {SIGNAL_TIMEFRAME} | Ejecución: {EXECUTION_TIMEFRAME}")
 
+        self.active_orders = {  # Nuevo: seguimiento de órdenes activas
+        'sl_order_id': None,
+        'tp_order_id': None,
+        'market_order_id': None
+        }
+
     def _should_exit_position(self, df, entry_price, position_type, atr_multiple=1.5):
         """Simula cierre por SL/TP considerando HIGH/LOW de la vela (más realista)"""
         last = df.iloc[-1]
@@ -328,17 +334,22 @@ class CryptoAgent:
             return  # ¡NO ENVIAR ORDEN!
 
         # Enviar orden (OCO en live, simple en paper)
+        # Enviar orden (OCO en live, simple en paper)
         if MODE == "live":
-            # Añadir logging detallado para diagnóstico
-            logging.info(f"🚀 ENVIANDO ORDEN A BINANCE | {pos_type.upper()} {size:.6f} {self.symbol}")
-            logging.info(f"  📊 SL: {sl} | TP: {tp} | Modo: {TRADING_MODE}")
-            
-            self.executor.place_order(
+            order_result = self.executor.place_order(
                 side='buy' if pos_type == 'long' else 'sell',
                 amount=size,
                 sl_price=sl,
                 tp_price=tp
             )
+            if order_result:
+                # Guardar IDs de órdenes para seguimiento
+                self.active_orders = {
+                    'market_order_id': order_result.get('market_order', {}).get('id'),
+                    'sl_order_id': order_result.get('sl_order_id'),
+                    'tp_order_id': order_result.get('tp_order_id')
+                }
+            logging.info(f"✅ Órdenes activas guardadas: {self.active_orders}")
         else:
             side = 'buy' if pos_type == 'long' else 'sell'
             self.executor.place_order(side, size, entry_price)

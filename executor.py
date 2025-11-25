@@ -76,12 +76,20 @@ class TradeExecutor:
             if TRADING_MODE == "futures":
                 # ✅ MÉTODO CORRECTO PARA FUTURES EN CCXT
                 balance = self.exchange.fetch_balance()
-                usdt_balance = balance.get('USDT', {}).get('total', 0.0)
+                if 'USDT' in balance and isinstance(balance['USDT'], dict):
+                    usdt_balance = balance['USDT'].get('total', 0.0)
+                elif hasattr(balance, 'USDT') and hasattr(balance.USDT, 'total'):
+                    usdt_balance = balance.USDT.total
+                else:
+                    usdt_balance = 0.0
                 return float(usdt_balance)
             else:
                 # Para spot
                 balance = self.exchange.fetch_balance()
-                usdt_balance = balance.get('USDT', {}).get('free', 0.0)
+                if 'USDT' in balance and isinstance(balance['USDT'], dict):
+                    usdt_balance = balance['USDT'].get('free', 0.0)
+                else:
+                    usdt_balance = 0.0
                 return float(usdt_balance)
         except Exception as e:
             logging.error(f"❌ Error al obtener saldo real: {str(e)}")
@@ -94,46 +102,45 @@ class TradeExecutor:
         
         try:
             # ✅ MÉTODO CORRECTO EN CCXT
-            positions = self.exchange.fetch_positions([symbol] if symbol else None)
+            if symbol:
+                normalized_symbol = self._normalize_symbol(symbol)
+                positions = self.exchange.fetch_positions([normalized_symbol])
+            else:
+                positions = self.exchange.fetch_positions()
+            
             return [p for p in positions if float(p['contracts']) > 0]
         except Exception as e:
             logging.warning(f"⚠️ Error al obtener posiciones: {str(e)}")
             return []
 
     def cancel_all_associated_orders(self, symbol):
-        """Cancela TODAS las órdenes asociadas a un símbolo (SL/TP y órdenes pendientes)"""
+        """Cancela SOLO las órdenes huérfanas (no las válidas SL/TP)"""
         try:
             normalized_symbol = self._normalize_symbol(symbol)
-            logging.info(f"🔍 Buscando ÓRDENES ABIERTAS para {normalized_symbol}...")
+            logging.info(f"🔍 Verificando órdenes para {normalized_symbol}...")
             
-            open_orders = []
-            try:
-                # ✅ MÉTODO CORRECTO EN CCXT
-                open_orders = self.exchange.fetch_open_orders(normalized_symbol)
-            except Exception as e:
-                logging.warning(f"⚠️ Error al obtener órdenes: {str(e)}. Intentando método alternativo...")
-                # No hay método alternativo necesario en ccxt
+            # Obtener TODAS las órdenes abiertas
+            open_orders = self.exchange.fetch_open_orders(normalized_symbol)
             
             canceled_count = 0
             for order in open_orders:
+                # ✅ NO CANCELAR ÓRDENES VÁLIDAS (SL/TP)
+                if order.get('type') in ['STOP_MARKET', 'TAKE_PROFIT_MARKET']:
+                    continue  # ¡NO CANCELAR ESTAS!
+                
+                # Cancelar solo órdenes huérfanas (límites no ejecutadas, etc.)
                 try:
-                    order_id = order.get('id', order.get('orderId'))
-                    if order_id:
-                        self.exchange.cancel_order(order_id, normalized_symbol)
-                        canceled_count += 1
-                        
-                        order_type = order.get('type', 'N/A')
-                        stop_price = order.get('stopPrice', 'N/A')
-                        price = order.get('price', 'N/A')
-                        logging.info(f"✅ Orden cancelada | ID: {order_id} | Tipo: {order_type} | Stop: {stop_price} | Precio: {price}")
+                    self.exchange.cancel_order(order['id'], normalized_symbol)
+                    canceled_count += 1
+                    logging.info(f"✅ Orden huérfana cancelada | ID: {order['id']} | Tipo: {order.get('type', 'N/A')}")
                 except Exception as e:
-                    logging.warning(f"⚠️ Error cancelando orden {order.get('id', 'N/A')}: {str(e)}")
+                    logging.warning(f"⚠️ Error cancelando orden huérfana {order['id']}: {str(e)}")
             
-            logging.info(f"✅ TOTAL ÓRDENES CANCELADAS para {normalized_symbol}: {canceled_count}")
+            logging.info(f"✅ Órdenes válidas (SL/TP) preservadas | Órdenes huérfanas canceladas: {canceled_count}")
             return canceled_count
             
         except Exception as e:
-            logging.error(f"❌ ERROR CRÍTICO EN LIMPIEZA DE ÓRDENES: {str(e)}")
+            logging.error(f"❌ Error en limpieza segura de órdenes: {str(e)}")
             return 0
 
     def place_order(self, side, amount, price=None, sl_price=None, tp_price=None):
@@ -148,7 +155,7 @@ class TradeExecutor:
             print(f"[PAPER] {side.upper()} {amount:.6f} de {self.symbol} | Tipo: {order_type}")
             if sl_price and tp_price:
                 print(f"  📌 SL: {sl_price:.2f} | TP: {tp_price:.2f} (simulados)")
-            return {"status": "filled", "price": price or 60000, "amount": amount}
+            return {"status": "filled", "price": price or 60000, "amount": amount, "id": "paper_order"}
         
         else:
             try:
@@ -208,7 +215,8 @@ class TradeExecutor:
                     return {
                         'market_order': market_order,
                         'sl_order_id': order_ids[0] if order_ids else None,
-                        'tp_order_id': order_ids[1] if len(order_ids) > 1 else None
+                        'tp_order_id': order_ids[1] if len(order_ids) > 1 else None,
+                        'id': market_order.get('id', 'N/A')
                     }
                 
                 else:
@@ -223,14 +231,15 @@ class TradeExecutor:
                 return None
 
     def close_position(self, amount, side="sell"):
-        """Cierra posición (usado principalmente en modo paper)"""
+        """Cierra posición"""
         if MODE == "paper":
             print(f"[PAPER] CIERRE {side.upper()} {amount:.6f} de {self.symbol}")
-            return {"status": "filled"}
+            return {"status": "filled", "id": "paper_close"}
         
         if TRADING_MODE == "futures":
             try:
                 normalized_symbol = self._normalize_symbol(self.symbol)
+                # Crear orden de mercado con reduceOnly
                 order = self.exchange.create_order(
                     symbol=normalized_symbol,
                     type='MARKET',
