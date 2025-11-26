@@ -322,6 +322,11 @@ class CryptoAgent:
             logging.warning("⚠️ Tamaño de posición <= 0, operación cancelada")
             return
 
+        # ✅ VERIFICACIÓN CRÍTICA: ¿Ya hay una posición abierta?
+        if self.position is not None:
+            logging.warning("⚠️ YA EXISTE UNA POSICIÓN ABIERTA. No se abrirá nueva posición.")
+            return
+
         # ✅ VERIFICACIÓN FINAL: margen suficiente
         required_margin = (size * entry_price) / LEVERAGE
         if required_margin > self.capital * 0.95:
@@ -333,7 +338,6 @@ class CryptoAgent:
             )
             return  # ¡NO ENVIAR ORDEN!
 
-        # Enviar orden (OCO en live, simple en paper)
         # Enviar orden (OCO en live, simple en paper)
         if MODE == "live":
             order_result = self.executor.place_order(
@@ -347,7 +351,7 @@ class CryptoAgent:
                 self.active_orders = {
                     'market_order_id': order_result.get('market_order', {}).get('id'),
                     'sl_order_id': order_result.get('sl_order_id'),
-                    'tp_order_id': order_result.get('tp_order_id')
+                    'tp_order_id': order_result.def _openget('tp_order_id')
                 }
             logging.info(f"✅ Órdenes activas guardadas: {self.active_orders}")
         else:
