@@ -113,39 +113,41 @@ class TradeExecutor:
             logging.warning(f"⚠️ Error al obtener posiciones: {str(e)}")
             return []
 
-    def cancel_all_associated_orders(self, symbol):
-        """Cancela SOLO las órdenes huérfanas (no las válidas SL/TP)"""
+    def cancel_order_if_exists(self, order_id, symbol):
+        """Cancela una orden SOLO si existe y está abierta"""
+        if not order_id:
+            return False
+        
         try:
             normalized_symbol = self._normalize_symbol(symbol)
-            logging.info(f"🔍 Verificando órdenes para {normalized_symbol}...")
+            order = self.exchange.fetch_order(order_id, normalized_symbol)
             
-            # Obtener TODAS las órdenes abiertas
-            open_orders = self.exchange.fetch_open_orders(normalized_symbol)
-            
-            canceled_count = 0
-            for order in open_orders:
-                # ✅ NO CANCELAR ÓRDENES VÁLIDAS (SL/TP)
-                if order.get('type') in ['STOP_MARKET', 'TAKE_PROFIT_MARKET']:
-                    continue  # ¡NO CANCELAR ESTAS!
-                
-                # Cancelar solo órdenes huérfanas (límites no ejecutadas, etc.)
-                try:
-                    self.exchange.cancel_order(order['id'], normalized_symbol)
-                    canceled_count += 1
-                    logging.info(f"✅ Orden huérfana cancelada | ID: {order['id']} | Tipo: {order.get('type', 'N/A')}")
-                except Exception as e:
-                    logging.warning(f"⚠️ Error cancelando orden huérfana {order['id']}: {str(e)}")
-            
-            logging.info(f"✅ Órdenes válidas (SL/TP) preservadas | Órdenes huérfanas canceladas: {canceled_count}")
-            return canceled_count
-            
+            if order['status'] in ['open', 'partially_filled']:
+                self.exchange.cancel_order(order_id, normalized_symbol)
+                logging.info(f"✅ Orden cancelada correctamente | ID: {order_id} | Estado: {order['status']}")
+                return True
+            else:
+                logging.info(f"ℹ️ Orden ya cerrada | ID: {order_id} | Estado: {order['status']}")
+                return False
         except Exception as e:
-            logging.error(f"❌ Error en limpieza segura de órdenes: {str(e)}")
-            return 0
+            if 'Order does not exist' in str(e) or 'Unknown order sent' in str(e):
+                logging.info(f"ℹ️ Orden ya ejecutada o cancelada | ID: {order_id}")
+                return False
+            logging.warning(f"⚠️ Error cancelando orden {order_id}: {str(e)}")
+            return False
+
+    def get_open_orders_for_symbol(self, symbol):
+        """Obtiene todas las órdenes abiertas para un símbolo"""
+        try:
+            normalized_symbol = self._normalize_symbol(symbol)
+            return self.exchange.fetch_open_orders(normalized_symbol)
+        except Exception as e:
+            logging.error(f"❌ Error obteniendo órdenes abiertas: {str(e)}")
+            return []
 
     def place_order(self, side, amount, price=None, sl_price=None, tp_price=None):
         """
-        Ejecuta órdenes en Binance USD-M Futures
+        Ejecuta órdenes en Binance USD-M Futures con gestión robusta de SL/TP
         """
         if MODE == "paper":
             # Modo paper: solo imprimir
@@ -155,7 +157,12 @@ class TradeExecutor:
             print(f"[PAPER] {side.upper()} {amount:.6f} de {self.symbol} | Tipo: {order_type}")
             if sl_price and tp_price:
                 print(f"  📌 SL: {sl_price:.2f} | TP: {tp_price:.2f} (simulados)")
-            return {"status": "filled", "price": price or 60000, "amount": amount, "id": "paper_order"}
+            return {
+                'market_order': {'id': 'paper_order'},
+                'sl_order_id': 'paper_sl',
+                'tp_order_id': 'paper_tp',
+                'id': 'paper_order'
+            }
         
         else:
             try:
@@ -171,52 +178,62 @@ class TradeExecutor:
                         side=side.upper(),
                         amount=amount
                     )
-                    logging.info(f"✅ Posición abierta: {side.upper()} {amount:.6f} de {normalized_symbol} | ID: {market_order.get('id', 'N/A')}")
+                    market_order_id = market_order.get('id', 'N/A')
+                    logging.info(f"✅ Posición abierta: {side.upper()} {amount:.6f} de {normalized_symbol} | ID: {market_order_id}")
                     
                     # 2. Crear órdenes SL/TP por separado
-                    order_ids = []
+                    sl_order_id = None
+                    tp_order_id = None
                     
                     if sl_price is not None:
                         sl_side = 'SELL' if side.upper() == 'BUY' else 'BUY'
                         logging.info(f"🛑 Creando Stop Loss: {sl_side} {amount} @ {sl_price}")
-                        sl_order = self.exchange.create_order(
-                            symbol=normalized_symbol,
-                            type='STOP_MARKET',
-                            side=sl_side,
-                            amount=amount,
-                            params={
-                                'stopPrice': sl_price,
-                                'closePosition': True,
-                                'workingType': 'CONTRACT_PRICE',
-                                'priceProtect': True
-                            }
-                        )
-                        logging.info(f"🛑 Stop Loss creado | ID: {sl_order.get('id', 'N/A')} | Precio: {sl_price:.2f}")
-                        order_ids.append(sl_order.get('id', ''))
+                        try:
+                            sl_order = self.exchange.create_order(
+                                symbol=normalized_symbol,
+                                type='STOP_MARKET',
+                                side=sl_side,
+                                amount=amount,
+                                params={
+                                    'stopPrice': sl_price,
+                                    'closePosition': True,  # Cierra TODA la posición
+                                    'workingType': 'CONTRACT_PRICE',
+                                    'priceProtect': True
+                                }
+                            )
+                            sl_order_id = sl_order.get('id', 'N/A')
+                            logging.info(f"🛑 Stop Loss creado | ID: {sl_order_id} | Precio: {sl_price:.2f}")
+                        except Exception as e:
+                            logging.error(f"❌ Error creando Stop Loss: {str(e)}")
                     
                     if tp_price is not None:
                         tp_side = 'SELL' if side.upper() == 'BUY' else 'BUY'
                         logging.info(f"🎯 Creando Take Profit: {tp_side} {amount} @ {tp_price}")
-                        tp_order = self.exchange.create_order(
-                            symbol=normalized_symbol,
-                            type='TAKE_PROFIT_MARKET',
-                            side=tp_side,
-                            amount=amount,
-                            params={
-                                'stopPrice': tp_price,
-                                'closePosition': True,
-                                'workingType': 'CONTRACT_PRICE',
-                                'priceProtect': True
-                            }
-                        )
-                        logging.info(f"🎯 Take Profit creado | ID: {tp_order.get('id', 'N/A')} | Precio: {tp_price:.2f}")
-                        order_ids.append(tp_order.get('id', ''))
+                        try:
+                            tp_order = self.exchange.create_order(
+                                symbol=normalized_symbol,
+                                type='TAKE_PROFIT_MARKET',
+                                side=tp_side,
+                                amount=amount,
+                                params={
+                                    'stopPrice': tp_price,
+                                    'closePosition': True,  # Cierra TODA la posición
+                                    'workingType': 'CONTRACT_PRICE',
+                                    'priceProtect': True
+                                }
+                            )
+                            tp_order_id = tp_order.get('id', 'N/A')
+                            logging.info(f"🎯 Take Profit creado | ID: {tp_order_id} | Precio: {tp_price:.2f}")
+                        except Exception as e:
+                            logging.error(f"❌ Error creando Take Profit: {str(e)}")
                     
+                    # 3. Devolver IDs para seguimiento
                     return {
                         'market_order': market_order,
-                        'sl_order_id': order_ids[0] if order_ids else None,
-                        'tp_order_id': order_ids[1] if len(order_ids) > 1 else None,
-                        'id': market_order.get('id', 'N/A')
+                        'sl_order_id': sl_order_id,
+                        'tp_order_id': tp_order_id,
+                        'id': market_order_id,
+                        'symbol': normalized_symbol
                     }
                 
                 else:
@@ -230,8 +247,11 @@ class TradeExecutor:
                 logging.error(error_msg)
                 return None
 
-    def close_position(self, amount, side="sell"):
-        """Cierra posición"""
+    def close_position_with_protection(self, amount, side="sell", active_orders=None):
+        """
+        Cierra posición con protección para SL/TP
+        active_orders: {'sl_order_id': 'id1', 'tp_order_id': 'id2'}
+        """
         if MODE == "paper":
             print(f"[PAPER] CIERRE {side.upper()} {amount:.6f} de {self.symbol}")
             return {"status": "filled", "id": "paper_close"}
@@ -239,7 +259,20 @@ class TradeExecutor:
         if TRADING_MODE == "futures":
             try:
                 normalized_symbol = self._normalize_symbol(self.symbol)
-                # Crear orden de mercado con reduceOnly
+                
+                # 1. Primero cancelar SOLO las órdenes que aún están activas
+                if active_orders:
+                    logging.info("🛡️ Protegiendo órdenes SL/TP antes de cerrar posición...")
+                    
+                    # Cancelar SOLO si las órdenes aún existen
+                    if active_orders.get('sl_order_id'):
+                        self.cancel_order_if_exists(active_orders['sl_order_id'], normalized_symbol)
+                    
+                    if active_orders.get('tp_order_id'):
+                        self.cancel_order_if_exists(active_orders['tp_order_id'], normalized_symbol)
+                
+                # 2. Cerrar posición con reduceOnly
+                logging.info(f"CloseOperation: {side.upper()} {amount:.6f} de {normalized_symbol}")
                 order = self.exchange.create_order(
                     symbol=normalized_symbol,
                     type='MARKET',
@@ -247,9 +280,16 @@ class TradeExecutor:
                     amount=amount,
                     params={'reduceOnly': True}
                 )
-                logging.info(f"✅ Posición cerrada manualmente: {side.upper()} {amount:.6f} | ID: {order.get('id', 'N/A')}")
+                order_id = order.get('id', 'N/A')
+                logging.info(f"✅ Posición cerrada | ID: {order_id}")
                 return order
+                
             except Exception as e:
+                # Manejo especial para "ReduceOnly Order is rejected"
+                if "2022" in str(e) or "ReduceOnly Order is rejected" in str(e):
+                    logging.warning("⚠️ Posición ya cerrada externamente. Verificando estado...")
+                    return {"status": "already_closed"}
+                
                 logging.error(f"❌ Error al cerrar posición: {str(e)}")
                 return None
         else:
