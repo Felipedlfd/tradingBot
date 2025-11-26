@@ -145,6 +145,36 @@ class TradeExecutor:
             logging.error(f"❌ Error obteniendo órdenes abiertas: {str(e)}")
             return []
 
+    def cancel_all_associated_orders(self, symbol):
+        """Cancela SOLO las órdenes huérfanas (no las válidas SL/TP)"""
+        try:
+            normalized_symbol = self._normalize_symbol(symbol)
+            logging.info(f"🔍 Verificando órdenes para {normalized_symbol}...")
+            
+            # Obtener TODAS las órdenes abiertas
+            open_orders = self.exchange.fetch_open_orders(normalized_symbol)
+            
+            canceled_count = 0
+            for order in open_orders:
+                # ✅ NO CANCELAR ÓRDENES VÁLIDAS (SL/TP)
+                if order.get('type') in ['STOP_MARKET', 'TAKE_PROFIT_MARKET']:
+                    continue  # ¡NO CANCELAR ESTAS!
+                
+                # Cancelar solo órdenes huérfanas (límites no ejecutadas, etc.)
+                try:
+                    self.exchange.cancel_order(order['id'], normalized_symbol)
+                    canceled_count += 1
+                    logging.info(f"✅ Orden huérfana cancelada | ID: {order['id']} | Tipo: {order.get('type', 'N/A')}")
+                except Exception as e:
+                    logging.warning(f"⚠️ Error cancelando orden huérfana {order['id']}: {str(e)}")
+            
+            logging.info(f"✅ Órdenes válidas (SL/TP) preservadas | Órdenes huérfanas canceladas: {canceled_count}")
+            return canceled_count
+            
+        except Exception as e:
+            logging.error(f"❌ Error en limpieza segura de órdenes: {str(e)}")
+            return 0
+
     def place_order(self, side, amount, price=None, sl_price=None, tp_price=None):
         """
         Ejecuta órdenes en Binance USD-M Futures con gestión robusta de SL/TP
@@ -170,7 +200,13 @@ class TradeExecutor:
                     normalized_symbol = self._normalize_symbol(self.symbol)
                     self._set_leverage()
                     
-                    # 1. Abrir posición con orden de mercado
+                    # 1. Verificar si ya hay una posición abierta
+                    positions = self.fetch_positions(normalized_symbol)
+                    if positions:
+                        logging.warning(f"⚠️ YA EXISTE UNA POSICIÓN ABIERTA. No se abrirá nueva posición.")
+                        return None
+                    
+                    # 2. Abrir posición con orden de mercado
                     logging.info(f"🔵 Abriendo posición MARKET: {side.upper()} {amount} {normalized_symbol}")
                     market_order = self.exchange.create_order(
                         symbol=normalized_symbol,
@@ -181,7 +217,7 @@ class TradeExecutor:
                     market_order_id = market_order.get('id', 'N/A')
                     logging.info(f"✅ Posición abierta: {side.upper()} {amount:.6f} de {normalized_symbol} | ID: {market_order_id}")
                     
-                    # 2. Crear órdenes SL/TP por separado
+                    # 3. Crear órdenes SL/TP por separado
                     sl_order_id = None
                     tp_order_id = None
                     
@@ -227,7 +263,7 @@ class TradeExecutor:
                         except Exception as e:
                             logging.error(f"❌ Error creando Take Profit: {str(e)}")
                     
-                    # 3. Devolver IDs para seguimiento
+                    # 4. Devolver IDs para seguimiento
                     return {
                         'market_order': market_order,
                         'sl_order_id': sl_order_id,

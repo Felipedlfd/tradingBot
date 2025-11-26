@@ -351,7 +351,7 @@ class CryptoAgent:
                 self.active_orders = {
                     'market_order_id': order_result.get('market_order', {}).get('id'),
                     'sl_order_id': order_result.get('sl_order_id'),
-                    'tp_order_id': order_result.def _openget('tp_order_id')
+                    'tp_order_id': order_result.get('tp_order_id')
                 }
             logging.info(f"✅ Órdenes activas guardadas: {self.active_orders}")
         else:
