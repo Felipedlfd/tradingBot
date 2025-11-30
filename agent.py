@@ -29,6 +29,8 @@ class CryptoAgent:
         self.execution_timeframe = EXECUTION_TIMEFRAME
         self.last_cleanup = pd.Timestamp.now(tz='UTC')
         self.last_capital_update = pd.Timestamp.now(tz='UTC')
+        self.position_open_time = None  # Para tracking de tiempo de apertura
+        self.cleanup_cooldown = 60  # 60 segundos de cooldown después de abrir posición
         
         # Inicializar capital según modo
         if MODE == "live":
@@ -48,12 +50,6 @@ class CryptoAgent:
             logging.info(f"🎭 Capital en modo paper: ${self.capital:.2f}")
         
         logging.info(f"🧠 Agente iniciado | Señales: {SIGNAL_TIMEFRAME} | Ejecución: {EXECUTION_TIMEFRAME}")
-
-        self.active_orders = {  # Nuevo: seguimiento de órdenes activas
-        'sl_order_id': None,
-        'tp_order_id': None,
-        'market_order_id': None
-        }
 
     def _should_exit_position(self, df, entry_price, position_type, atr_multiple=1.5):
         """Simula cierre por SL/TP considerando HIGH/LOW de la vela (más realista)"""
@@ -126,8 +122,6 @@ class CryptoAgent:
                 # Si no hay posición abierta pero tenemos registro local
                 if not open_positions and self.position:
                     logging.warning("⚠️ Posición cerrada externamente. Limpiando estado local y órdenes...")
-                    # Cancelar órdenes asociadas primero
-                    self.executor.cancel_all_associated_orders(self.symbol)
                     # Forzar cierre de posición local
                     current_price = self.executor.exchange.fetch_ticker(self.symbol)['last']
                     self._close_position(current_price, 'closed_externally')
@@ -135,6 +129,7 @@ class CryptoAgent:
                 
                 # Si no hay posición abierta, limpiar órdenes huérfanas
                 if not open_positions:
+                    logging.info("🧹 No hay posición abierta. Limpiando órdenes huérfanas...")
                     self.executor.cancel_all_associated_orders(self.symbol)
                     
         except Exception as e:
@@ -155,13 +150,13 @@ class CryptoAgent:
             
             # Obtener saldo actual según el modo de trading
             if TRADING_MODE == "futures":
-                balance = self.executor.exchange.fetch_balance()
-                usdt_balance = balance.get('USDT', {}).get('total', 0.0)
+                balance = self.executor.get_account_balance()
             else:
                 balance = self.executor.exchange.fetch_balance()
                 usdt_balance = balance.get('USDT', {}).get('free', 0.0)
+                balance = float(usdt_balance)
             
-            real_balance = float(usdt_balance)
+            real_balance = float(balance)
             
             # Actualizar capital si hay cambios significativos (>0.01 USDT)
             if abs(real_balance - self.capital) > 0.01:
@@ -213,11 +208,18 @@ class CryptoAgent:
             return True
         
         try:
-            # ✅ MÉTODO ROBUSTO PARA BINANCE USD-M FUTURES
-            balance = self.executor.get_account_balance()
+            # Obtener margen disponible real
+            account = self.executor.exchange.fetch_balance()
+            margin_balance = account.get('total', 0)
+            available_balance = account.get('free', 0)
             
-            if balance < 10.0:  # Mínimo $10 para operar
-                logging.warning(f"⚠️ CAPITAL INSUFICIENTE: ${balance:.2f}. Necesitas al menos $10 para operar.")
+            # Alerta si el margen está por debajo del 10%
+            if available_balance < margin_balance * 0.1:
+                logging.warning(
+                    f"⚠️ MARGEN CRÍTICAMENTE BAJO | "
+                    f"Disponible: ${available_balance:.2f} | "
+                    f"Total: ${margin_balance:.2f}"
+                )
                 return False
             
             return True
@@ -300,12 +302,20 @@ class CryptoAgent:
                 if MODE == "paper" and (sl_hit or tp_hit):
                     self._close_position(current_price, 'SL' if sl_hit else 'TP')
             
-            # 👇 LIMPIEZA PERIÓDICA DE ÓRDENES HUÉRFANAS (CORREGIDO)
+            # 👇 LIMPIEZA PERIÓDICA DE ÓRDENES HUÉRFANAS CON COOLDOWN
             if MODE == "live":
                 current_time = pd.Timestamp.now(tz='UTC')
+                
+                # ✅ NUEVA LÓGICA: Saltar limpieza si estamos en cooldown
+                if self.position_open_time:
+                    time_since_open = (current_time - self.position_open_time).total_seconds()
+                    if time_since_open < self.cleanup_cooldown:
+                        logging.info(f"⏳ COOLDOWN ACTIVO: Esperando {self.cleanup_cooldown - time_since_open:.0f}s antes de limpieza")
+                        return  # ¡NO EJECUTAR LIMPIEZA!
+                
                 if (current_time - self.last_cleanup).total_seconds() >= 60:
                     logging.info("🧹 Ejecutando limpieza periódica de órdenes huérfanas...")
-                    self.executor.cancel_all_associated_orders(self.symbol)  # ✅ ¡CORREGIDO!
+                    self.executor.cancel_all_associated_orders(self.symbol)
                     self.last_cleanup = current_time
                     
         except Exception as e:
@@ -338,21 +348,33 @@ class CryptoAgent:
             )
             return  # ¡NO ENVIAR ORDEN!
 
+        # ✅ GUARDAR TIEMPO DE APERTURA
+        self.position_open_time = pd.Timestamp.now(tz='UTC')
+        logging.info(f"⏰ Posición abierta a las: {self.position_open_time}")
+
         # Enviar orden (OCO en live, simple en paper)
         if MODE == "live":
+            # Añadir logging detallado para diagnóstico
+            logging.info(f"🚀 ENVIANDO ORDEN A BINANCE | {pos_type.upper()} {size:.6f} {self.symbol}")
+            logging.info(f"  📊 SL: {sl} | TP: {tp} | Modo: {TRADING_MODE}")
+            
             order_result = self.executor.place_order(
                 side='buy' if pos_type == 'long' else 'sell',
                 amount=size,
                 sl_price=sl,
                 tp_price=tp
             )
-            if order_result:
-                # Guardar IDs de órdenes para seguimiento
-                self.active_orders = {
-                    'market_order_id': order_result.get('market_order', {}).get('id'),
-                    'sl_order_id': order_result.get('sl_order_id'),
-                    'tp_order_id': order_result.get('tp_order_id')
-                }
+            
+            if not order_result:
+                logging.error("❌ ERROR AL ENVIAR ORDEN. Posición no abierta.")
+                return
+            
+            # Guardar IDs de órdenes para seguimiento
+            self.active_orders = {
+                'market_order_id': order_result.get('id'),
+                'sl_order_id': order_result.get('sl_order_id'),
+                'tp_order_id': order_result.get('tp_order_id')
+            }
             logging.info(f"✅ Órdenes activas guardadas: {self.active_orders}")
         else:
             side = 'buy' if pos_type == 'long' else 'sell'
@@ -399,11 +421,26 @@ class CryptoAgent:
         }
         self.trades[-1].update(trade_record)
         save_trade(self.trades[-1])
+        
+        # ✅ CERRAR POSICIÓN CON PROTECCIÓN DE ÓRDENES
         close_side = 'sell' if self.position['type'] == 'long' else 'buy'
-        self.executor.close_position(self.position['size'], close_side)
+        self.executor.close_position_with_protection(
+            self.position['size'], 
+            close_side,
+            active_orders=self.active_orders  # Pasar IDs de órdenes para protección
+        )
         
         # ✅ ACTUALIZAR CAPITAL DESDE BINANCE (después de cerrar)
         self._update_real_capital()
+        
+        # ✅ LIMPIAR ESTADO LOCAL Y TIEMPO DE APERTURA
+        self.position_open_time = None
+        self.position = None
+        self.active_orders = {
+            'sl_order_id': None,
+            'tp_order_id': None,
+            'market_order_id': None
+        }
         
         # Mensaje de cierre
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -414,5 +451,4 @@ class CryptoAgent:
         )
         logging.info(msg.replace('\n', ' | '))
         send_telegram_message(msg)
-        self.position = None
         self.trade_count += 1

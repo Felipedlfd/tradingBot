@@ -149,30 +149,49 @@ class TradeExecutor:
         """Cancela SOLO las órdenes huérfanas (no las válidas SL/TP)"""
         try:
             normalized_symbol = self._normalize_symbol(symbol)
-            logging.info(f"🔍 Verificando órdenes para {normalized_symbol}...")
+            logging.info(f"🔍 ANALIZANDO ÓRDENES para {normalized_symbol}...")
             
-            # Obtener TODAS las órdenes abiertas
+            # Obtener TODAS las órdenes abiertas y posiciones
             open_orders = self.exchange.fetch_open_orders(normalized_symbol)
+            positions = self.exchange.fetch_positions([normalized_symbol])
+            
+            # Identificar posiciones abiertas reales
+            open_position_sizes = {}
+            for pos in positions:
+                if float(pos['contracts']) > 0:
+                    side = pos['side'].upper()  # LONG o SHORT
+                    open_position_sizes[side] = float(pos['contracts'])
             
             canceled_count = 0
-            for order in open_orders:
-                # ✅ NO CANCELAR ÓRDENES VÁLIDAS (SL/TP)
-                if order.get('type') in ['STOP_MARKET', 'TAKE_PROFIT_MARKET']:
-                    continue  # ¡NO CANCELAR ESTAS!
-                
-                # Cancelar solo órdenes huérfanas (límites no ejecutadas, etc.)
-                try:
-                    self.exchange.cancel_order(order['id'], normalized_symbol)
-                    canceled_count += 1
-                    logging.info(f"✅ Orden huérfana cancelada | ID: {order['id']} | Tipo: {order.get('type', 'N/A')}")
-                except Exception as e:
-                    logging.warning(f"⚠️ Error cancelando orden huérfana {order['id']}: {str(e)}")
+            preserved_count = 0
             
-            logging.info(f"✅ Órdenes válidas (SL/TP) preservadas | Órdenes huérfanas canceladas: {canceled_count}")
+            for order in open_orders:
+                order_id = order.get('id')
+                order_type = order.get('type', '').upper()
+                side = order.get('side', '').upper()
+                
+                # ✅ PRESERVAR ÓRDENES SL/TP PARA POSICIONES ABIERTAS
+                if order_type in ['STOP_MARKET', 'TAKE_PROFIT_MARKET']:
+                    position_side = 'LONG' if side == 'SELL' else 'SHORT'  # SL/TP contrario a la posición
+                    
+                    if position_side in open_position_sizes:
+                        preserved_count += 1
+                        logging.info(f"🛡️ PRESERVADA | {order_type} | ID: {order_id} | Posición {position_side} activa")
+                        continue
+                
+                # ✅ CANCELAR SOLO ÓRDENES HUÉRFANAS (sin posición asociada)
+                try:
+                    self.exchange.cancel_order(order_id, normalized_symbol)
+                    canceled_count += 1
+                    logging.info(f"✅ CANCELADA | {order_type} | ID: {order_id} | Razón: Huérfana")
+                except Exception as e:
+                    logging.warning(f"⚠️ Error cancelando {order_id}: {str(e)}")
+            
+            logging.info(f"✅ LIMPIEZA COMPLETADA | Preservadas: {preserved_count} | Canceladas: {canceled_count}")
             return canceled_count
             
         except Exception as e:
-            logging.error(f"❌ Error en limpieza segura de órdenes: {str(e)}")
+            logging.error(f"❌ ERROR EN LIMPIEZA: {str(e)}")
             return 0
 
     def place_order(self, side, amount, price=None, sl_price=None, tp_price=None):
