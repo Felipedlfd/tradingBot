@@ -3,7 +3,7 @@ import numpy as np
 import logging
 import time
 from datetime import datetime
-from config import SYMBOL, TRADING_MODE, INITIAL_CAPITAL, MODE, SIGNAL_TIMEFRAME, EXECUTION_TIMEFRAME, LEVERAGE, RISK_PER_TRADE
+from config import SYMBOL, TRADING_MODE, INITIAL_CAPITAL, MODE, SIGNAL_TIMEFRAME, EXECUTION_TIMEFRAME, LEVERAGE, RISK_REWARD_RATIO, SL_BUFFER_MULTIPLIER, MAX_LEVERAGE_DYNAMIC, VOLATILITY_THRESHOLD
 from data import fetch_ohlcv
 from indicators import add_indicators
 from risk_manager import calculate_position_size
@@ -318,9 +318,27 @@ class CryptoAgent:
         last = df.iloc[-1]
         entry_price = last['close']
         atr = last['atr']
-        sl = entry_price - atr * self.params['atr_multiple'] if pos_type == 'long' else entry_price + atr * self.params['atr_multiple']
-        tp = entry_price + (entry_price - sl) * 2 if pos_type == 'long' else entry_price - (sl - entry_price) * 2
-        size = calculate_position_size(self.capital, entry_price, sl, self.params['risk_per_trade'], LEVERAGE)
+        
+        # ✅ NUEVO: Calcular ATR dinámico según volatilidad
+        volatility = atr / entry_price
+        is_volatile = volatility > VOLATILITY_THRESHOLD
+        
+        # ✅ NUEVO: Ajustar multiplicador de SL según volatilidad
+        sl_multiplier = self.params['atr_multiple'] * (SL_BUFFER_MULTIPLIER if is_volatile else 1.0)
+        
+        # ✅ NUEVO: Calcular TP usando RISK_REWARD_RATIO
+        sl_distance = atr * sl_multiplier
+        tp_distance = sl_distance * RISK_REWARD_RATIO
+        
+        sl = entry_price - sl_distance if pos_type == 'long' else entry_price + sl_distance
+        tp = entry_price + tp_distance if pos_type == 'long' else entry_price - tp_distance
+        
+        # ✅ NUEVO: Ajustar apalancamiento dinámico según volatilidad
+        leverage_used = LEVERAGE
+        if is_volatile:
+            leverage_used = min(LEVERAGE, MAX_LEVERAGE_DYNAMIC // 2)  # Reducir apalancamiento en mercados volátiles
+        
+        size = calculate_position_size(self.capital, entry_price, sl, self.params['risk_per_trade'], leverage_used)
         if size <= 0:
             logging.warning("⚠️ Tamaño de posición <= 0, operación cancelada")
             return
@@ -330,20 +348,14 @@ class CryptoAgent:
             logging.warning("⚠️ YA EXISTE UNA POSICIÓN ABIERTA. No se abrirá nueva posición.")
             return
 
-        # ✅ VERIFICACIÓN FINAL: margen suficiente
-        required_margin = (size * entry_price) / LEVERAGE
-        if required_margin > self.capital * 0.95:
-            logging.critical(
-                f"❌ IMPOSIBLE ABRIR POSICIÓN | "
-                f"Margen requerido: ${required_margin:.2f} | "
-                f"Capital disponible: ${self.capital:.2f} | "
-                f"Tamaño ajustado a 0"
-            )
-            return  # ¡NO ENVIAR ORDEN!
-
         # ✅ GUARDAR TIEMPO DE APERTURA
         self.position_open_time = pd.Timestamp.now(tz='UTC')
         logging.info(f"⏰ Posición abierta a las: {self.position_open_time}")
+        
+        # ✅ MOSTRAR PARÁMETROS DINÁMICOS
+        logging.info(f"📊 PARÁMETROS DINÁMICOS: Volatilidad={volatility:.2%} | "
+                    f"SL_mult={sl_multiplier:.1f} | TP_mult={RISK_REWARD_RATIO:.1f} | "
+                    f"Apalancamiento={leverage_used}x")
 
         # Enviar orden (OCO en live, simple en paper)
         if MODE == "live":
